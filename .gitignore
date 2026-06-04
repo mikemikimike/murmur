@@ -13,3 +13,5 @@ Thumbs.db
 .vscode/
 roadmap/
 docs/superpowers/
+docs/FEATURE_BLUEPRINT.md
+docs/IMPLEMENTATION_PLANS.md
