@@ -9,6 +9,7 @@ declare global {
       onStartRecording: (cb: () => void) => void;
       onStopRecording: (cb: () => void) => void;
       onInfo: (cb: (info: InfoView) => void) => void;
+      onToken: (cb: (payload: TokenPayload) => void) => void;
       sendAudioChunk: (buffer: ArrayBuffer) => void;
       toggleRecording: () => void;
       requestInfo: () => void;
@@ -22,6 +23,7 @@ declare global {
       onQueueDepth: (cb: (depth: number) => void) => void;
       onError: (cb: (payload: { message: string; sessionDir: string }) => void) => void;
       retry: () => void;
+      refineLast: () => void;
       openLogDir: (dir: string) => void;
     };
   }
@@ -38,11 +40,18 @@ interface InfoView {
   controlPanelUrl: string;
 }
 
+interface TokenPayload {
+  token: string;
+  phase: 'transcription' | 'refinement';
+}
+
 const STATES = [
   'idle',
   'recording',
   'transcribing',
+  'transcribing-streaming',
   'refining',
+  'refining-streaming',
   'injecting',
   'done',
   'error',
@@ -55,7 +64,9 @@ const STATE_LABELS: Record<StateName, string> = {
   idle: 'idle',
   recording: 'Recording\u2026',
   transcribing: 'Transcribing\u2026',
+  'transcribing-streaming': 'Transcribing\u2026',
   refining: 'Refining\u2026',
+  'refining-streaming': 'Refining\u2026',
   injecting: 'Pasting\u2026',
   done: 'Done',
   error: 'Error',
@@ -86,6 +97,9 @@ logoWrap.innerHTML = LOGO_SVG;
 
 const soundbar = createSoundbar(barsEl);
 let latestInfo: InfoView | null = null;
+let streamBuffer = '';
+let streamPhase: 'transcription' | 'refinement' | null = null;
+let hasLastTranscription = false;
 
 function setState(state: StateName): void {
   currentState = state;
@@ -93,6 +107,20 @@ function setState(state: StateName): void {
   overlay.classList.add(`state-${state}`);
   statusChip.textContent = STATE_LABELS[state];
   if (latestInfo) renderInfoTooltip(latestInfo);
+
+  if (state === 'transcribing-streaming') {
+    streamBuffer = '';
+    streamPhase = 'transcription';
+  } else if (state === 'refining-streaming') {
+    streamBuffer = '';
+    streamPhase = 'refinement';
+  } else if (state === 'idle' || state === 'done' || state === 'error') {
+    if (state === 'done' && streamPhase === 'refinement') {
+      hasLastTranscription = true;
+    }
+    streamBuffer = '';
+    streamPhase = null;
+  }
 
   if (state === 'recording') {
     overlay.classList.add('expanded');
@@ -155,6 +183,32 @@ function renderInfoTooltip(info: InfoView): void {
   hotkeys.append(keys);
   rows.append(hotkeys);
 
+  if (streamBuffer) {
+    const streamPreview = div('stream-preview');
+    streamPreview.append(
+      div('stream-phase', streamPhase === 'transcription' ? 'Transcribing' : 'Refining'),
+    );
+    streamPreview.append(div('stream-text', streamBuffer));
+    rows.append(streamPreview);
+  }
+
+  if (hasLastTranscription && (currentState === 'done' || currentState === 'idle')) {
+    const refineRow = div('tooltip-row');
+    refineRow.append(div('tooltip-label', 'Action'));
+    const refineBtn = document.createElement('button');
+    refineBtn.className = 'tooltip-key';
+    refineBtn.textContent = 'Refine last';
+    refineBtn.style.cursor = 'pointer';
+    refineBtn.style.border = '1px solid rgba(255,255,255,0.1)';
+    refineBtn.style.padding = '3px 8px';
+    refineBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      window.murmur.refineLast();
+    });
+    refineRow.append(refineBtn);
+    rows.append(refineRow);
+  }
+
   const foot = div('tooltip-foot');
   foot.append(div('tooltip-dot'), div('tooltip-value', 'Drag to move. Right-click for menu.'));
 
@@ -168,6 +222,16 @@ window.murmur.onStatus((s) => {
     setState(s as StateName);
   }
   if (s === 'done') dismissErrorToast();
+});
+
+window.murmur.onToken((payload: TokenPayload) => {
+  if (
+    (payload.phase === 'transcription' && streamPhase === 'transcription') ||
+    (payload.phase === 'refinement' && streamPhase === 'refinement')
+  ) {
+    streamBuffer += payload.token;
+    if (latestInfo) renderInfoTooltip(latestInfo);
+  }
 });
 
 window.murmur.onStartRecording(async () => {
@@ -228,7 +292,6 @@ logBtn.addEventListener('click', () => {
 
 dismissBtn.addEventListener('click', dismissErrorToast);
 
-// Toggle window-level mouse passthrough so transparent areas don't eat clicks.
 overlay.addEventListener('mouseenter', () => {
   window.murmur.setMouseInteractive(true);
 });
@@ -236,15 +299,11 @@ overlay.addEventListener('mouseleave', () => {
   window.murmur.setMouseInteractive(false);
 });
 
-// Right-click anywhere on the overlay opens the native context menu.
 overlay.addEventListener('contextmenu', (e) => {
   e.preventDefault();
   window.murmur.showContextMenu();
 });
 
-// Programmatic drag: a press becomes a click if it doesn't move past the
-// threshold, and becomes a window drag if it does. Window movement happens
-// in the main process via cursor polling.
 const DRAG_THRESHOLD_PX = 4;
 
 interface PressState {

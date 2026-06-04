@@ -34,11 +34,21 @@ function cfg(dir) {
 }
 
 function idlePipeline(overrides = {}) {
-  return { isBusy: () => false, ...overrides };
+  return {
+    isBusy: () => false,
+    addTokenListener: () => {},
+    removeTokenListener: () => {},
+    ...overrides,
+  };
 }
 
 function busyPipeline(overrides = {}) {
-  return { isBusy: () => true, ...overrides };
+  return {
+    isBusy: () => true,
+    addTokenListener: () => {},
+    removeTokenListener: () => {},
+    ...overrides,
+  };
 }
 
 describe('Murmur MCP tool handlers', () => {

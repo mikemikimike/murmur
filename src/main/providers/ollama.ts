@@ -1,4 +1,10 @@
-import type { LlmProvider, ProviderConfig, RefineRequest, RefineResponse } from './types.js';
+import type {
+  LlmProvider,
+  ProviderConfig,
+  RefineRequest,
+  RefineResponse,
+  StreamRefineOptions,
+} from './types.js';
 import { stripThink } from './types.js';
 
 interface OllamaTagsResponse {
@@ -43,6 +49,70 @@ export class OllamaProvider implements LlmProvider {
     return { text: stripThink(data.response), durationMs: Date.now() - started };
   }
 
+  async refineStream(
+    { systemPrompt, userPrompt }: RefineRequest,
+    { onToken }: StreamRefineOptions,
+  ): Promise<RefineResponse> {
+    const started = Date.now();
+
+    const body = {
+      model: this.config.model,
+      system: systemPrompt,
+      prompt: userPrompt,
+      stream: true,
+      think: false,
+      options: {
+        temperature: this.config.temperature,
+      },
+    };
+
+    const res = await fetch(`${this.config.baseUrl}/api/generate`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(60_000),
+    });
+
+    if (!res.ok) {
+      const errText = await res.text();
+      throw new Error(`Ollama /api/generate HTTP ${res.status}: ${errText}`);
+    }
+
+    if (!res.body) {
+      throw new Error('Ollama returned no response body for streaming request');
+    }
+
+    let fullText = '';
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+
+        const lines = buffer.split('\n');
+        buffer = lines.pop() ?? '';
+
+        for (const line of lines) {
+          const trimmed = line.trim();
+          if (!trimmed) continue;
+          const chunk = JSON.parse(trimmed) as OllamaGenerateResponse;
+          if (chunk.response) {
+            fullText += chunk.response;
+            onToken(chunk.response);
+          }
+        }
+      }
+    } finally {
+      reader.releaseLock();
+    }
+
+    return { text: stripThink(fullText), durationMs: Date.now() - started };
+  }
+
   async prewarm(): Promise<number> {
     const started = Date.now();
     try {
@@ -64,9 +134,6 @@ export class OllamaProvider implements LlmProvider {
   }
 
   async preflight(): Promise<string | null> {
-    // Warn early if the base URL looks like an OpenAI-compat server (e.g. LM
-    // Studio on :1234) rather than a real Ollama instance.  Ollama's default
-    // port is 11434; anything that ends with /v1 is almost certainly wrong.
     const urlLower = this.config.baseUrl.toLowerCase().replace(/\/$/, '');
     if (urlLower.endsWith('/v1') || urlLower.endsWith(':1234')) {
       return (
@@ -89,9 +156,6 @@ export class OllamaProvider implements LlmProvider {
         );
       }
       const raw = (await res.json()) as unknown;
-      // Normalise: Ollama always returns { models: [...] }.  Guard defensively
-      // in case the endpoint returns a different shape (e.g. the user pointed
-      // the base URL at a non-Ollama server by mistake).
       if (
         raw !== null &&
         typeof raw === 'object' &&
@@ -99,7 +163,6 @@ export class OllamaProvider implements LlmProvider {
       ) {
         tags = raw as OllamaTagsResponse;
       } else {
-        // Can't verify the model list — skip the check rather than crash.
         return null;
       }
     } catch (err) {

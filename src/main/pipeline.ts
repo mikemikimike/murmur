@@ -8,7 +8,10 @@ import {
   IPC_START_RECORDING,
   IPC_STATUS,
   IPC_STOP_RECORDING,
+  IPC_TOKEN,
   type Status,
+  type TokenPayload,
+  type TokenPhase,
 } from '../shared/ipc.js';
 import type { AudioRecorder } from './audio/recorder.js';
 import type { ResolvedConfig } from './config/index.js';
@@ -51,6 +54,7 @@ export interface PipelineDeps {
   getWindow?: () => BrowserWindow | null;
   onStatus?: (s: Status) => void;
   emitStatus?: (s: Status) => void;
+  onToken?: (token: string, phase: TokenPhase) => void;
   requestRendererStart?: () => void;
   requestRendererStop?: () => void;
   inject?: (text: string, opts: InjectOptions) => Promise<void>;
@@ -84,14 +88,28 @@ export class Pipeline {
   private recordStopTimer: NodeJS.Timeout | null = null;
   private pendingHeadlessResolve: ((v: ProcessPcmResult) => void) | null = null;
   private pendingHeadlessReject: ((err: unknown) => void) | null = null;
+  private tokenListeners = new Set<(token: string, phase: TokenPhase) => void>();
+  private lastTranscription: string | null = null;
+  private lastSkillIds: string[] = [];
 
   constructor(private readonly deps: PipelineDeps) {}
+
+  addTokenListener(fn: (token: string, phase: TokenPhase) => void): void {
+    this.tokenListeners.add(fn);
+  }
+
+  removeTokenListener(fn: (token: string, phase: TokenPhase) => void): void {
+    this.tokenListeners.delete(fn);
+  }
+
+  hasLastTranscription(): boolean {
+    return this.lastTranscription !== null;
+  }
 
   isRecording(): boolean {
     return this.state === 'recording';
   }
 
-  /** True when overlay, queued, background, and headless paths are all idle. */
   isIdle(): boolean {
     return (
       this.state === 'idle' &&
@@ -101,7 +119,6 @@ export class Pipeline {
     );
   }
 
-  /** True when overlay, queued, background, or headless work is in flight. */
   isBusy(): boolean {
     return !this.isIdle();
   }
@@ -119,6 +136,15 @@ export class Pipeline {
     this.deps.getWindow?.()?.webContents.send(IPC_STATUS, s);
     this.deps.emitStatus?.(s);
     this.deps.onStatus?.(s);
+  }
+
+  private emitToken(token: string, phase: TokenPhase): void {
+    const payload: TokenPayload = { token, phase };
+    this.deps.getWindow?.()?.webContents.send(IPC_TOKEN, payload);
+    this.deps.onToken?.(token, phase);
+    for (const listener of this.tokenListeners) {
+      listener(token, phase);
+    }
   }
 
   private requestRendererStart(): void {
@@ -295,6 +321,74 @@ export class Pipeline {
     return refined;
   }
 
+  async refineLast(skillIds?: string[]): Promise<string> {
+    if (!this.lastTranscription) {
+      throw new Error('no previous transcription to refine');
+    }
+    if (this.isBusy()) {
+      throw new Error('pipeline is busy');
+    }
+
+    const { cfg, provider } = this.deps;
+    const skills = loadSkills(cfg.skillsDir);
+    const activeSkillIds = skillIds ?? this.lastSkillIds;
+    const composed = composeSystemPrompt(cfg.systemPrompt, skills, activeSkillIds);
+    const session = createSession(cfg.logsDir, cfg.logMode);
+    const pipelineStart = Date.now();
+    const timings: Record<string, number | string> = {
+      provider: provider.config.id,
+      source: 'refine-last',
+    };
+
+    try {
+      this.setStatus('refining-streaming');
+      session.writeTranscription(this.lastTranscription);
+      session.writeSystemPrompt(composed);
+      timings.activeSkills = activeSkillIds.join(',') || '(none)';
+
+      const rStart = Date.now();
+      const { text: refined } = await provider.refineStream(
+        {
+          systemPrompt: composed,
+          userPrompt: this.lastTranscription,
+        },
+        {
+          onToken: (token) => this.emitToken(token, 'refinement'),
+        },
+      );
+      timings.refineMs = Date.now() - rStart;
+      session.writeRefined(refined);
+
+      if (!refined) throw new Error(`${provider.config.displayName} returned empty refinement`);
+
+      const injectFn = this.deps.inject;
+      if (injectFn) {
+        this.setStatus('injecting');
+        const iStart = Date.now();
+        await injectFn(refined, {
+          clipboardRestoreDelayMs: cfg.clipboardRestoreDelayMs,
+          clipboardRetention: cfg.clipboardRetention,
+          injectionMethod: cfg.injectionMethod,
+        });
+        timings.injectMs = Date.now() - iStart;
+      }
+
+      timings.totalMs = Date.now() - pipelineStart;
+      session.writeTimings(timings);
+      this.setStatus('done');
+      this.scheduleIdle();
+      return refined;
+    } catch (err) {
+      console.error('[pipeline] refineLast error:', err);
+      session.writeError(err);
+      timings.totalMs = Date.now() - pipelineStart;
+      session.writeTimings(timings);
+      this.setStatus('error');
+      this.scheduleIdle(2_500);
+      throw err;
+    }
+  }
+
   async processPcm(
     buffer: ArrayBuffer | Buffer,
     opts: ProcessPcmOptions = {},
@@ -317,12 +411,18 @@ export class Pipeline {
       timings.audioBytes = wav.length;
       timings.audioDurationMs = Math.round((pcm.length / 2 / cfg.sampleRate) * 1000);
 
-      this.setStatus('transcribing');
+      this.setStatus('transcribing-streaming');
       const tStart = Date.now();
-      const { text: transcription, stderr: whisperStderr } = await this.getTranscribeFn()(wavPath, {
-        cliPath: cfg.whisperCliPath,
-        modelPath: cfg.whisperModelPath,
-      });
+      const { text: transcription, stderr: whisperStderr } = await this.getTranscribeFn()(
+        wavPath,
+        {
+          cliPath: cfg.whisperCliPath,
+          modelPath: cfg.whisperModelPath,
+        },
+        {
+          onToken: (token) => this.emitToken(token, 'transcription'),
+        },
+      );
       timings.transcribeMs = Date.now() - tStart;
       session.writeTranscription(transcription);
       writeFileSync(path.join(session.dir, 'whisper-stderr.log'), whisperStderr, 'utf8');
@@ -334,17 +434,25 @@ export class Pipeline {
 
       if (!transcription) throw new Error('whisper returned empty transcription');
 
-      this.setStatus('refining');
+      this.lastTranscription = transcription;
+      this.lastSkillIds = this.resolveSkillIds(opts.skillIds);
+
+      this.setStatus('refining-streaming');
       const skills = loadSkills(cfg.skillsDir);
       const activeSkillIds = this.resolveSkillIds(opts.skillIds);
       const composed = composeSystemPrompt(cfg.systemPrompt, skills, activeSkillIds);
       session.writeSystemPrompt(composed);
       timings.activeSkills = activeSkillIds.join(',') || '(none)';
       const rStart = Date.now();
-      const { text: refined } = await provider.refine({
-        systemPrompt: composed,
-        userPrompt: transcription,
-      });
+      const { text: refined } = await provider.refineStream(
+        {
+          systemPrompt: composed,
+          userPrompt: transcription,
+        },
+        {
+          onToken: (token) => this.emitToken(token, 'refinement'),
+        },
+      );
       timings.refineMs = Date.now() - rStart;
       session.writeRefined(refined);
       console.log(

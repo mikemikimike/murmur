@@ -10,6 +10,7 @@ import {
   IPC_OPEN_CONTROL_PANEL,
   IPC_OPEN_LOG_DIR,
   IPC_QUIT,
+  IPC_REFINE_LAST,
   IPC_REQUEST_INFO,
   IPC_RETRY,
   IPC_SET_MOUSE_INTERACTIVE,
@@ -164,8 +165,19 @@ function showContextMenu(): void {
   const r = loaded.resolved;
   const providerLabel = `${PROVIDER_PRESETS[r.provider].displayName} · ${r.model}`;
   const panelUrl = controlPanel?.url ?? 'http://localhost:7331';
+  const canRefineLast = pipeline?.hasLastTranscription() ?? false;
 
   const menu = Menu.buildFromTemplate([
+    {
+      label: 'Refine last transcription',
+      enabled: canRefineLast && !pipeline?.isBusy(),
+      click: () => {
+        pipeline?.refineLast().catch((err) => {
+          console.error('[main] refineLast failed:', err);
+        });
+      },
+    },
+    { type: 'separator' },
     {
       label: 'Open control panel',
       click: () => {
@@ -267,6 +279,13 @@ function wireIPC(): void {
     });
   });
 
+  ipcMain.on(IPC_REFINE_LAST, () => {
+    if (!pipeline?.hasLastTranscription()) return;
+    pipeline.refineLast().catch((err) => {
+      console.error('[main] refineLast failed:', err);
+    });
+  });
+
   ipcMain.on(IPC_OPEN_LOG_DIR, (_evt, dir: string) => {
     shell.openPath(dir).catch((err) => {
       console.error('[main] openPath failed:', err);
@@ -312,7 +331,13 @@ function createMainPipeline(): Pipeline {
     onStatus: (s) => {
       let iconState: TrayIconState = 'idle';
       if (s === 'recording') iconState = 'recording';
-      else if (s === 'transcribing' || s === 'refining' || s === 'injecting') {
+      else if (
+        s === 'transcribing' ||
+        s === 'transcribing-streaming' ||
+        s === 'refining' ||
+        s === 'refining-streaming' ||
+        s === 'injecting'
+      ) {
         iconState = 'processing';
       }
       tray.setState(iconState);

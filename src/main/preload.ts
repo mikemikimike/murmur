@@ -12,6 +12,7 @@ import {
   IPC_OPEN_LOG_DIR,
   IPC_QUEUE_DEPTH,
   IPC_QUIT,
+  IPC_REFINE_LAST,
   IPC_REQUEST_INFO,
   IPC_RETRY,
   IPC_SET_MOUSE_INTERACTIVE,
@@ -20,7 +21,9 @@ import {
   IPC_STATUS,
   IPC_STOP_RECORDING,
   IPC_TOGGLE_RECORDING,
+  IPC_TOKEN,
   type Status,
+  type TokenPayload,
 } from '../shared/ipc.js';
 
 contextBridge.exposeInMainWorld('murmur', {
@@ -35,6 +38,9 @@ contextBridge.exposeInMainWorld('murmur', {
   },
   onInfo: (cb: (info: InfoPayload) => void) => {
     ipcRenderer.on(IPC_INFO, (_evt, info: InfoPayload) => cb(info));
+  },
+  onToken: (cb: (payload: TokenPayload) => void) => {
+    ipcRenderer.on(IPC_TOKEN, (_evt, payload: TokenPayload) => cb(payload));
   },
   sendAudioChunk: (buffer: ArrayBuffer) => {
     ipcRenderer.send(IPC_AUDIO_CHUNK, buffer);
@@ -74,6 +80,9 @@ contextBridge.exposeInMainWorld('murmur', {
   },
   retry: () => {
     ipcRenderer.send(IPC_RETRY);
+  },
+  refineLast: () => {
+    ipcRenderer.send(IPC_REFINE_LAST);
   },
   openLogDir: (dir: string) => {
     ipcRenderer.send(IPC_OPEN_LOG_DIR, dir);

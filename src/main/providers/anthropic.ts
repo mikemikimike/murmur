@@ -1,5 +1,11 @@
-import type { LlmProvider, ProviderConfig, RefineRequest, RefineResponse } from './types.js';
-import { stripThink } from './types.js';
+import type {
+  LlmProvider,
+  ProviderConfig,
+  RefineRequest,
+  RefineResponse,
+  StreamRefineOptions,
+} from './types.js';
+import { parseSseStream, stripThink } from './types.js';
 
 interface AnthropicContentBlock {
   type: 'text' | string;
@@ -21,6 +27,12 @@ interface AnthropicModelsResponse {
   data: AnthropicModelItem[];
 }
 
+interface AnthropicStreamEvent {
+  type: string;
+  delta?: { type: string; text?: string };
+  index?: number;
+}
+
 /**
  * Anthropic Claude provider.
  *
@@ -31,7 +43,7 @@ interface AnthropicModelsResponse {
  *
  * Required: `config.apiKey` must be a valid Anthropic API key.
  *
- * ⚠️  Online provider — audio transcriptions and refined prompts
+ * Online provider — audio transcriptions and refined prompts
  * leave your machine and are processed on Anthropic's servers.
  */
 export class AnthropicProvider implements LlmProvider {
@@ -71,6 +83,54 @@ export class AnthropicProvider implements LlmProvider {
     const data = (await res.json()) as AnthropicMessagesResponse;
     const raw = data.content.find((b) => b.type === 'text')?.text ?? '';
     return { text: stripThink(raw), durationMs: Date.now() - started };
+  }
+
+  async refineStream(
+    { systemPrompt, userPrompt }: RefineRequest,
+    { onToken }: StreamRefineOptions,
+  ): Promise<RefineResponse> {
+    const started = Date.now();
+
+    const body = {
+      model: this.config.model,
+      max_tokens: 1024,
+      temperature: this.config.temperature,
+      system: systemPrompt,
+      stream: true,
+      messages: [{ role: 'user', content: userPrompt }],
+    };
+
+    const res = await fetch(`${this.config.baseUrl}/messages`, {
+      method: 'POST',
+      headers: this.headers(),
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(60_000),
+    });
+
+    if (!res.ok) {
+      const errText = await res.text();
+      throw new Error(`Anthropic /messages HTTP ${res.status}: ${errText}`);
+    }
+
+    if (!res.body) {
+      throw new Error('Anthropic returned no response body for streaming request');
+    }
+
+    let fullText = '';
+
+    await parseSseStream(res.body, (_eventType, data) => {
+      try {
+        const event = JSON.parse(data) as AnthropicStreamEvent;
+        if (event.type === 'content_block_delta' && event.delta?.text) {
+          fullText += event.delta.text;
+          onToken(event.delta.text);
+        }
+      } catch {
+        /* skip malformed SSE data lines */
+      }
+    });
+
+    return { text: stripThink(fullText), durationMs: Date.now() - started };
   }
 
   async prewarm(): Promise<number> {
