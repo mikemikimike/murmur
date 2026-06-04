@@ -3,6 +3,8 @@ export const IPC_STATUS = 'murmur:status';
 export const IPC_START_RECORDING = 'murmur:start-recording';
 export const IPC_STOP_RECORDING = 'murmur:stop-recording';
 export const IPC_INFO = 'murmur:info';
+export const IPC_TOKEN = 'murmur:token';
+export const IPC_REFINE_LAST = 'murmur:refine-last';
 
 // renderer → main
 export const IPC_AUDIO_CHUNK = 'murmur:audio-chunk';
@@ -27,15 +29,24 @@ export type Status =
   | 'idle'
   | 'recording'
   | 'transcribing'
+  | 'transcribing-streaming'
   | 'refining'
+  | 'refining-streaming'
   | 'injecting'
   | 'done'
   | 'error'
   | 'queue-full';
 
+export type TokenPhase = 'transcription' | 'refinement';
+
+export interface TokenPayload {
+  token: string;
+  phase: TokenPhase;
+}
+
 /**
  * Snapshot of public-safe runtime info that the renderer is allowed to see.
- * The api key is intentionally excluded.
+ * The api key is deliberately excluded.
  */
 export interface InfoPayload {
   provider: string;

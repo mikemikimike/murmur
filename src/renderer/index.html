@@ -192,7 +192,9 @@
 
       .state-recording #bars,
       .state-transcribing #bars,
+      .state-transcribing-streaming #bars,
       .state-refining #bars,
+      .state-refining-streaming #bars,
       .state-injecting #bars,
       .state-done #bars,
       .state-error #bars {
@@ -215,7 +217,9 @@
       }
 
       .state-transcribing .bar,
+      .state-transcribing-streaming .bar,
       .state-refining .bar,
+      .state-refining-streaming .bar,
       .state-injecting .bar {
         background: linear-gradient(180deg, #fde68a, var(--processing));
         animation: shimmer 1.4s ease-in-out infinite;
@@ -237,13 +241,17 @@
       }
 
       .state-transcribing .bar:nth-child(odd),
+      .state-transcribing-streaming .bar:nth-child(odd),
       .state-refining .bar:nth-child(odd),
+      .state-refining-streaming .bar:nth-child(odd),
       .state-injecting .bar:nth-child(odd) {
         animation-delay: -0.7s;
       }
 
       .state-transcribing .bar:nth-child(3n),
+      .state-transcribing-streaming .bar:nth-child(3n),
       .state-refining .bar:nth-child(3n),
+      .state-refining-streaming .bar:nth-child(3n),
       .state-injecting .bar:nth-child(3n) {
         animation-delay: -0.35s;
       }
@@ -269,7 +277,9 @@
 
       .state-recording #status-chip,
       .state-transcribing #status-chip,
+      .state-transcribing-streaming #status-chip,
       .state-refining #status-chip,
+      .state-refining-streaming #status-chip,
       .state-injecting #status-chip,
       .state-done #status-chip,
       .state-error #status-chip {
@@ -278,7 +288,9 @@
 
       .state-recording #status-chip { color: var(--recording); }
       .state-transcribing #status-chip,
+      .state-transcribing-streaming #status-chip,
       .state-refining #status-chip,
+      .state-refining-streaming #status-chip,
       .state-injecting #status-chip { color: var(--processing); }
       .state-done #status-chip { color: var(--done); }
       .state-error #status-chip { color: var(--error); }
@@ -421,6 +433,31 @@
         border-radius: 50%;
         background: var(--accent);
         box-shadow: 0 0 10px rgba(167, 139, 250, 0.75);
+      }
+
+      .stream-preview {
+        padding: 7px 0 0;
+        border-top: 1px solid rgba(255, 255, 255, 0.06);
+        margin-top: 6px;
+      }
+
+      .stream-phase {
+        color: rgba(232, 232, 242, 0.42);
+        font-size: 9px;
+        font-weight: 700;
+        letter-spacing: 0.12em;
+        text-transform: uppercase;
+        margin-bottom: 4px;
+      }
+
+      .stream-text {
+        color: rgba(232, 232, 242, 0.72);
+        font-size: 10.5px;
+        line-height: 1.4;
+        max-height: 72px;
+        overflow: hidden;
+        white-space: pre-wrap;
+        word-break: break-word;
       }
 
       #queue-badge {

@@ -1,5 +1,11 @@
-import type { LlmProvider, ProviderConfig, RefineRequest, RefineResponse } from './types.js';
-import { stripThink } from './types.js';
+import type {
+  LlmProvider,
+  ProviderConfig,
+  RefineRequest,
+  RefineResponse,
+  StreamRefineOptions,
+} from './types.js';
+import { parseSseStream, stripThink } from './types.js';
 
 interface OpenAiModelsResponse {
   data: { id: string }[];
@@ -14,6 +20,13 @@ interface OpenAiChatChoice {
 interface OpenAiChatResponse {
   id?: string;
   choices: OpenAiChatChoice[];
+}
+
+interface OpenAiStreamDelta {
+  choices: Array<{
+    delta: { content?: string };
+    finish_reason?: string | null;
+  }>;
 }
 
 /**
@@ -65,6 +78,57 @@ export class OpenAiCompatProvider implements LlmProvider {
     return { text: stripThink(raw), durationMs: Date.now() - started };
   }
 
+  async refineStream(
+    { systemPrompt, userPrompt }: RefineRequest,
+    { onToken }: StreamRefineOptions,
+  ): Promise<RefineResponse> {
+    const started = Date.now();
+
+    const body = {
+      model: this.config.model,
+      stream: true,
+      temperature: this.config.temperature,
+      messages: [
+        { role: 'system', content: systemPrompt },
+        { role: 'user', content: userPrompt },
+      ],
+    };
+
+    const res = await fetch(`${this.config.baseUrl}/chat/completions`, {
+      method: 'POST',
+      headers: this.headers(),
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(60_000),
+    });
+
+    if (!res.ok) {
+      const errText = await res.text();
+      throw new Error(`${this.config.displayName} chat/completions HTTP ${res.status}: ${errText}`);
+    }
+
+    if (!res.body) {
+      throw new Error('OpenAI-compat server returned no response body for streaming request');
+    }
+
+    let fullText = '';
+
+    await parseSseStream(res.body, (_eventType, data) => {
+      if (data === '[DONE]') return;
+      try {
+        const parsed = JSON.parse(data) as OpenAiStreamDelta;
+        const content = parsed.choices[0]?.delta?.content;
+        if (content) {
+          fullText += content;
+          onToken(content);
+        }
+      } catch {
+        /* skip malformed SSE data lines */
+      }
+    });
+
+    return { text: stripThink(fullText), durationMs: Date.now() - started };
+  }
+
   async prewarm(): Promise<number> {
     const started = Date.now();
     try {
@@ -86,8 +150,6 @@ export class OpenAiCompatProvider implements LlmProvider {
   }
 
   async preflight(): Promise<string | null> {
-    // Early check: warn if the user likely forgot the /v1 suffix.
-    // LM Studio / llama.cpp / vLLM all require it.
     if (!/\/v\d+\/?$/.test(this.config.baseUrl.replace(/\/$/, ''))) {
       return (
         `Base URL '${this.config.baseUrl}' does not end with a version segment like /v1. ` +
@@ -110,9 +172,6 @@ export class OpenAiCompatProvider implements LlmProvider {
         );
       }
       const raw = (await res.json()) as unknown;
-      // Defensively normalise the response — some servers return the models list
-      // directly as an array, others wrap it in { data: [...] }, and some (e.g.
-      // LM Studio when the path is wrong) return an object with no data at all.
       if (Array.isArray(raw)) {
         models = { data: raw as { id: string }[] };
       } else if (
@@ -122,8 +181,6 @@ export class OpenAiCompatProvider implements LlmProvider {
       ) {
         models = raw as OpenAiModelsResponse;
       } else {
-        // Server returned something we don't recognise.  Treat as "can't verify
-        // model list" but don't hard-block — the server might still work fine.
         return null;
       }
     } catch (err) {

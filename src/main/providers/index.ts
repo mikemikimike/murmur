@@ -9,6 +9,7 @@ export type {
   ProviderId,
   RefineRequest,
   RefineResponse,
+  StreamRefineOptions,
 } from './types.js';
 
 export interface ProviderPreset {

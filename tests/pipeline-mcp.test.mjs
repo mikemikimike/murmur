@@ -52,6 +52,14 @@ function makeFakeProvider(refinements) {
       refinements.push({ systemPrompt, userPrompt });
       return { text: `REFINED: ${userPrompt}`, durationMs: 1 };
     },
+    async refineStream({ systemPrompt, userPrompt }, { onToken }) {
+      refinements.push({ systemPrompt, userPrompt });
+      const text = `REFINED: ${userPrompt}`;
+      for (const word of text.split(' ')) {
+        onToken(`${word} `);
+      }
+      return { text, durationMs: 1 };
+    },
     async preflight() {
       return null;
     },
@@ -106,7 +114,7 @@ describe('Pipeline MCP / headless', () => {
     assert.equal(injections.length, 0);
     assert.deepEqual(
       statuses.filter((s) => s !== 'idle'),
-      ['transcribing', 'refining', 'done'],
+      ['transcribing-streaming', 'refining-streaming', 'done'],
     );
   });
 
@@ -296,7 +304,7 @@ describe('Pipeline overlay path', () => {
     assert.equal(injections[0], 'REFINED: overlay speech');
     assert.deepEqual(
       statuses.filter((s) => s !== 'idle' && s !== 'recording'),
-      ['transcribing', 'refining', 'injecting', 'done'],
+      ['transcribing-streaming', 'refining-streaming', 'injecting', 'done'],
     );
   });
 

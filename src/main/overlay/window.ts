@@ -10,7 +10,7 @@ const PACKAGE_ROOT = path.resolve(__dirname, '../../..');
 export const OVERLAY_WIDTH = 320;
 // Extra vertical room above the pill so the hover tooltip renders fully inside
 // the transparent window bounds.
-export const OVERLAY_HEIGHT = 240;
+export const OVERLAY_HEIGHT = 340;
 
 function resolveAppIcon(): string | undefined {
   const iconPath = path.join(PACKAGE_ROOT, 'logo.svg');

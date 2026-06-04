@@ -3,6 +3,7 @@ import path from 'node:path';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { z } from 'zod';
+import type { TokenPhase } from '../../shared/ipc.js';
 import { updateConfigFile as defaultUpdateConfigFile } from '../config/file.js';
 import type { ResolvedConfig } from '../config/index.js';
 import type { Pipeline, ProcessPcmResult } from '../pipeline.js';
@@ -21,7 +22,6 @@ export interface StartMcpServerDeps {
   getPipeline: () => Pipeline;
   getConfig: () => ResolvedConfig;
   onConfigUpdated: () => void;
-  /** Test seam: called each time a request-scoped MCP server is constructed. */
   onMcpServerCreated?: () => void;
   createMurmurMcpServer?: typeof createMurmurMcpServer;
 }
@@ -39,7 +39,13 @@ export interface MurmurMcpServer {
 
 export type McpPipeline = Pick<
   Pipeline,
-  'record' | 'stopRecording' | 'transcribeFile' | 'refineText' | 'isBusy'
+  | 'record'
+  | 'stopRecording'
+  | 'transcribeFile'
+  | 'refineText'
+  | 'isBusy'
+  | 'addTokenListener'
+  | 'removeTokenListener'
 >;
 
 export type MurmurMcpServerDeps = {
@@ -81,7 +87,7 @@ function rejectIfBusy(getPipeline: () => McpPipeline): void {
 }
 
 function registerMurmurTools(
-  server: McpServer,
+  mcpServer: McpServer,
   deps: MurmurMcpServerDeps,
   handlers: Map<string, (args: Record<string, unknown>) => Promise<ToolResult>>,
 ): void {
@@ -100,6 +106,16 @@ function registerMurmurTools(
     };
   }
 
+  function emitStreamToken(token: string, phase: TokenPhase): void {
+    mcpServer
+      .sendLoggingMessage({
+        level: 'info',
+        logger: 'murmur',
+        data: { token, phase },
+      })
+      .catch(() => {});
+  }
+
   const recordSchema = {
     duration_ms: z.number().int().positive().optional(),
     skill_ids: z.array(z.string()).optional(),
@@ -111,8 +127,11 @@ function registerMurmurTools(
     skill_ids?: string[];
     inject?: boolean;
   }): Promise<ToolResult> => {
+    const pipeline = deps.getPipeline();
+    const listener = (token: string, phase: TokenPhase) => emitStreamToken(token, phase);
+    pipeline.addTokenListener(listener);
     try {
-      const result = await deps.getPipeline().record({
+      const result = await pipeline.record({
         durationMs: args.duration_ms,
         skillIds: args.skill_ids,
         inject: args.inject ?? false,
@@ -120,14 +139,16 @@ function registerMurmurTools(
       return textResult({ text: recordText(result) });
     } catch (err) {
       return toolError(err);
+    } finally {
+      pipeline.removeTokenListener(listener);
     }
   };
   handlers.set('murmur_record', testHandler(recordSchema, recordHandler));
-  server.registerTool(
+  mcpServer.registerTool(
     'murmur_record',
     {
       description:
-        'Record a voice prompt and return the refined text. Starts recording immediately; call murmur_stop_record or pass duration_ms to auto-stop.',
+        'Record a voice prompt and return the refined text. Starts recording immediately; call murmur_stop_record or pass duration_ms to auto-stop. Streams partial transcription and refinement tokens as logging notifications.',
       inputSchema: recordSchema,
     },
     recordHandler,
@@ -142,7 +163,7 @@ function registerMurmurTools(
     }
   };
   handlers.set('murmur_stop_record', async () => stopHandler());
-  server.registerTool(
+  mcpServer.registerTool(
     'murmur_stop_record',
     { description: 'Stop the active Murmur MCP recording session.', inputSchema: {} },
     stopHandler,
@@ -162,7 +183,7 @@ function registerMurmurTools(
     }
   };
   handlers.set('murmur_transcribe', testHandler(transcribeSchema, transcribeHandler));
-  server.registerTool(
+  mcpServer.registerTool(
     'murmur_transcribe',
     {
       description: 'Transcribe a WAV or MP3 file using the configured Whisper model.',
@@ -179,16 +200,21 @@ function registerMurmurTools(
     text: string;
     skill_ids?: string[];
   }): Promise<ToolResult> => {
+    const pipeline = deps.getPipeline();
+    const listener = (token: string, phase: TokenPhase) => emitStreamToken(token, phase);
+    pipeline.addTokenListener(listener);
     try {
       rejectIfBusy(deps.getPipeline);
-      const result = await deps.getPipeline().refineText(args.text, { skillIds: args.skill_ids });
+      const result = await pipeline.refineText(args.text, { skillIds: args.skill_ids });
       return textResult({ text: refinedText(result) });
     } catch (err) {
       return toolError(err);
+    } finally {
+      pipeline.removeTokenListener(listener);
     }
   };
   handlers.set('murmur_refine', testHandler(refineSchema, refineHandler));
-  server.registerTool(
+  mcpServer.registerTool(
     'murmur_refine',
     {
       description: 'Refine raw text using the active system prompt and enabled skills.',
@@ -217,7 +243,7 @@ function registerMurmurTools(
     }
   };
   handlers.set('murmur_list_skills', async () => listHandler());
-  server.registerTool(
+  mcpServer.registerTool(
     'murmur_list_skills',
     { description: 'List Murmur skills and whether each one is enabled.', inputSchema: {} },
     listHandler,
@@ -263,7 +289,7 @@ function registerMurmurTools(
     }
   };
   handlers.set('murmur_toggle_skill', testHandler(toggleSchema, toggleHandler));
-  server.registerTool(
+  mcpServer.registerTool(
     'murmur_toggle_skill',
     { description: 'Enable, disable, or toggle a Murmur skill.', inputSchema: toggleSchema },
     toggleHandler,
