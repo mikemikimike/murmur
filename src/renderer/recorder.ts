@@ -3,6 +3,11 @@ import { downsample, floatsToInt16PCM, TARGET_SAMPLE_RATE } from '../shared/pcm.
 
 const ANALYSER_FFT_SIZE = 256;
 
+interface WorkletMessage {
+  samples: Float32Array;
+  rms: number;
+}
+
 interface CaptureState {
   stream: MediaStream;
   audioContext: AudioContext;
@@ -15,6 +20,7 @@ interface CaptureState {
 }
 
 let state: CaptureState | null = null;
+let latestRms: number | null = null;
 
 export async function startCapture(): Promise<void> {
   if (state) return;
@@ -48,8 +54,9 @@ export async function startCapture(): Promise<void> {
   analyser.smoothingTimeConstant = 0.6;
 
   const chunks: Float32Array[] = [];
-  workletNode.port.onmessage = (e: MessageEvent<Float32Array>) => {
-    chunks.push(new Float32Array(e.data));
+  workletNode.port.onmessage = (e: MessageEvent<WorkletMessage>) => {
+    chunks.push(new Float32Array(e.data.samples));
+    latestRms = e.data.rms;
   };
 
   source.connect(analyser);
@@ -73,6 +80,7 @@ export async function stopCapture(): Promise<ArrayBuffer> {
   if (!state) return new ArrayBuffer(0);
   const captured = state;
   state = null;
+  latestRms = null;
 
   captured.workletNode.port.onmessage = null;
   captured.workletNode.disconnect();
@@ -99,6 +107,10 @@ export async function stopCapture(): Promise<ArrayBuffer> {
 
 export function isCapturing(): boolean {
   return state !== null;
+}
+
+export function readRms(): number | null {
+  return latestRms;
 }
 
 /**

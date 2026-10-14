@@ -128,7 +128,10 @@ function setState(state: StateName): void {
     soundbar.start();
   } else if (state === 'idle') {
     overlay.classList.remove('expanded');
-    soundbar.stop();
+    soundbar.idle();
+  } else if (state === 'done') {
+    overlay.classList.add('expanded');
+    soundbar.idle();
   } else {
     overlay.classList.add('expanded');
     soundbar.stop();
