@@ -187,6 +187,9 @@ function resolveLayeredPath(
   if (sources.cli[key]) return resolver(sources.cli[key] as string, cwdBase);
   if (sources.file[key]) return resolver(sources.file[key] as string, sources.fileDir);
   if (sources.env[key]) return resolver(sources.env[key] as string, cwdBase);
+  // Logs belong next to the config, not wherever the process happened to start
+  // (under `npx` that is the user's home folder).
+  if (key === 'logsDir') return resolver(fallback, sources.fileDir);
   return resolver(fallback, cwdBase);
 }
 
@@ -235,23 +238,27 @@ export function loadConfig(opts: LoadConfigOptions): LoadedConfig {
     // Write absolute paths into the first-time config so that future runs from
     // a different cwd still find whisper + logs + skills correctly.
     //
-    // On Windows we ship whisper under ./bin/whisper/ relative to the install
-    // root (populated by `setup:whisper`), so we resolve against cwd.
+    // On Windows the first-run installer (`setup-whisper.ps1 -InstallDir`)
+    // extracts whisper into <userData>/bin/whisper/. A dev checkout that ran
+    // `pnpm setup:whisper` has it under ./bin/whisper/ instead, so prefer that
+    // only when it actually exists. Never seed against a bare cwd: under `npx`
+    // that is the user's home folder.
     // On Linux/macOS whisper-cli is a plain PATH command — store just the name,
     // not an absolute path, so it keeps working after the binary is moved.
     // The model file is downloaded into the user data dir by `setup:whisper`.
-    const cwdBase = process.cwd();
     const userDataDir = path.dirname(configFilePath);
     const IS_WINDOWS = process.platform === 'win32';
+    const devWhisperCli = path.resolve(process.cwd(), DEFAULT_CONFIG.whisperCliPath);
+    const whisperBase = IS_WINDOWS && existsSync(devWhisperCli) ? process.cwd() : userDataDir;
     const seedDefaults: Record<string, unknown> = {
       ...DEFAULT_CONFIG,
       whisperCliPath: IS_WINDOWS
-        ? path.resolve(cwdBase, DEFAULT_CONFIG.whisperCliPath)
+        ? path.resolve(whisperBase, DEFAULT_CONFIG.whisperCliPath)
         : DEFAULT_CONFIG.whisperCliPath, // bare name, resolved via PATH at runtime
       whisperModelPath: IS_WINDOWS
-        ? path.resolve(cwdBase, DEFAULT_CONFIG.whisperModelPath)
+        ? path.resolve(whisperBase, DEFAULT_CONFIG.whisperModelPath)
         : path.join(userDataDir, 'models', 'ggml-base.en.bin'),
-      logsDir: path.resolve(cwdBase, DEFAULT_CONFIG.logsDir),
+      logsDir: path.resolve(userDataDir, 'logs'),
       skillsDir: path.resolve(userDataDir, 'skills'),
     };
     // Do not persist built-in LLM defaults into a fresh config. Leaving these
