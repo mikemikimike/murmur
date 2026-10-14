@@ -55,28 +55,35 @@ export async function parseSseStream(
   const decoder = new TextDecoder();
   let buffer = '';
 
+  const dispatch = (event: string) => {
+    let eventType = 'message';
+    let data = '';
+    for (const line of event.split('\n')) {
+      if (line.startsWith('event:')) {
+        eventType = line.slice(6).trim();
+      } else if (line.startsWith('data:')) {
+        data += (data ? '\n' : '') + line.slice(5).trim();
+      }
+    }
+    if (data) onEvent(eventType, data);
+  };
+
   try {
     while (true) {
       const { done, value } = await reader.read();
       if (done) break;
-      buffer += decoder.decode(value, { stream: true });
+      // Some servers (and proxies in front of llama.cpp / vLLM) use CRLF.
+      // Without normalising, no "\n\n" boundary is ever found and the whole
+      // response is silently dropped.
+      buffer = (buffer + decoder.decode(value, { stream: true })).replace(/\r\n/g, '\n');
 
       const events = buffer.split('\n\n');
       buffer = events.pop() ?? '';
-
-      for (const event of events) {
-        let eventType = 'message';
-        let data = '';
-        for (const line of event.split('\n')) {
-          if (line.startsWith('event:')) {
-            eventType = line.slice(6).trim();
-          } else if (line.startsWith('data:')) {
-            data += (data ? '\n' : '') + line.slice(5).trim();
-          }
-        }
-        if (data) onEvent(eventType, data);
-      }
+      for (const event of events) dispatch(event);
     }
+    // A final event without a trailing blank line is still an event.
+    buffer = (buffer + decoder.decode()).replace(/\r\n/g, '\n');
+    if (buffer.trim()) dispatch(buffer);
   } finally {
     reader.releaseLock();
   }
