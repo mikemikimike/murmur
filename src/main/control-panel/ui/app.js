@@ -57,6 +57,38 @@ const FIELD_INFO = {
     flag: '--injection-method',
     env: 'MURMUR_INJECTION_METHOD',
   },
+  progressiveInjection: {
+    inputId: 'cfg-progressiveInjection',
+    flag: '--progressive-injection',
+    env: 'MURMUR_PROGRESSIVE_INJECTION',
+  },
+  vadEnabled: { inputId: 'cfg-vadEnabled', flag: '--vad', env: 'MURMUR_VAD_ENABLED' },
+  vadThresholdDb: {
+    inputId: 'cfg-vadThresholdDb',
+    flag: '--vad-threshold',
+    env: 'MURMUR_VAD_THRESHOLD_DB',
+  },
+  vadSilenceMs: {
+    inputId: 'cfg-vadSilenceMs',
+    flag: '--vad-silence',
+    env: 'MURMUR_VAD_SILENCE_MS',
+  },
+  vadLeadInMs: { inputId: 'cfg-vadLeadInMs', flag: '--vad-lead-in', env: 'MURMUR_VAD_LEAD_IN_MS' },
+  contextCapture: {
+    inputId: 'cfg-contextCapture',
+    flag: '--context',
+    env: 'MURMUR_CONTEXT_CAPTURE',
+  },
+  clipboardContextEntries: {
+    inputId: 'cfg-clipboardContextEntries',
+    flag: '--clipboard-entries',
+    env: 'MURMUR_CLIPBOARD_CONTEXT_ENTRIES',
+  },
+  screenshotContext: {
+    inputId: 'cfg-screenshotContext',
+    flag: '--screenshot',
+    env: 'MURMUR_SCREENSHOT_CONTEXT',
+  },
   systemPrompt: { inputId: 'system-prompt', flag: '--system-prompt', env: 'MURMUR_SYSTEM_PROMPT' },
   controlPanelPort: {
     inputId: 'cfg-controlPanelPort',
@@ -131,6 +163,19 @@ function applyStateToDom() {
     $('#cfg-clipboardRestoreDelayMs').value = c.clipboardRestoreDelayMs;
     $('#cfg-clipboardRetention').value = c.clipboardRetention ?? 'keep-generated';
     $('#cfg-injectionMethod').value = c.injectionMethod ?? 'auto';
+    $('#cfg-progressiveInjection').checked = Boolean(c.progressiveInjection);
+  }
+
+  if (!dirtyForms.has('voice')) {
+    $('#cfg-vadEnabled').checked = Boolean(c.vadEnabled);
+    $('#cfg-vadThresholdDb').value = c.vadThresholdDb;
+    $('#cfg-vadSilenceMs').value = c.vadSilenceMs;
+    $('#cfg-vadLeadInMs').value = c.vadLeadInMs;
+    $('#cfg-contextCapture').checked = Boolean(c.contextCapture);
+    $('#cfg-clipboardContextEntries').value = c.clipboardContextEntries ?? 0;
+    $('#cfg-screenshotContext').checked = Boolean(c.screenshotContext);
+    const routes = c.appSkillRoutes ?? [];
+    $('#cfg-appSkillRoutes').value = routes.length ? JSON.stringify(routes, null, 2) : '';
   }
 
   if (!dirtyForms.has('paths')) {
@@ -510,6 +555,8 @@ function readConfigForm(extra = {}) {
     clipboardRestoreDelayMs: Number($('#cfg-clipboardRestoreDelayMs').value),
     clipboardRetention: $('#cfg-clipboardRetention').value,
     injectionMethod: $('#cfg-injectionMethod').value,
+    progressiveInjection: $('#cfg-progressiveInjection').checked,
+    ...readVoiceForm(),
     logsDir: $('#cfg-logsDir').value.trim(),
     logMode: $('#cfg-logMode').value,
     skillsDir: $('#cfg-skillsDir').value.trim(),
@@ -670,9 +717,45 @@ function wireHotkeys() {
       clipboardRestoreDelayMs: Number($('#cfg-clipboardRestoreDelayMs').value),
       clipboardRetention: $('#cfg-clipboardRetention').value,
       injectionMethod: $('#cfg-injectionMethod').value,
+      progressiveInjection: $('#cfg-progressiveInjection').checked,
     }),
     'hotkeys',
   );
+}
+
+/** Throws a readable error so the save toast explains what is wrong. */
+function parseAppSkillRoutes(text) {
+  const trimmed = text.trim();
+  if (!trimmed) return [];
+  let parsed;
+  try {
+    parsed = JSON.parse(trimmed);
+  } catch (err) {
+    throw new Error(`App skill routes: invalid JSON (${err.message})`);
+  }
+  if (!Array.isArray(parsed)) throw new Error('App skill routes must be a JSON array');
+  return parsed.map((r) => ({
+    match: String(r?.match ?? ''),
+    enable: Array.isArray(r?.enable) ? r.enable : [],
+    disable: Array.isArray(r?.disable) ? r.disable : [],
+  }));
+}
+
+function readVoiceForm() {
+  return {
+    vadEnabled: $('#cfg-vadEnabled').checked,
+    vadThresholdDb: Number($('#cfg-vadThresholdDb').value),
+    vadSilenceMs: Number($('#cfg-vadSilenceMs').value),
+    vadLeadInMs: Number($('#cfg-vadLeadInMs').value),
+    contextCapture: $('#cfg-contextCapture').checked,
+    clipboardContextEntries: Number($('#cfg-clipboardContextEntries').value),
+    screenshotContext: $('#cfg-screenshotContext').checked,
+    appSkillRoutes: parseAppSkillRoutes($('#cfg-appSkillRoutes').value),
+  };
+}
+
+function wireVoice() {
+  wireGenericForm('#voice-form', readVoiceForm, 'voice');
 }
 
 function wirePaths() {
@@ -882,6 +965,7 @@ wireSkills();
 wireProvider();
 wireWhisper();
 wireHotkeys();
+wireVoice();
 wirePaths();
 wireSaveAll();
 wireOverlayControls();
