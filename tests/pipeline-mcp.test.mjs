@@ -499,6 +499,43 @@ describe('Pipeline overlay path', () => {
     assert.ok(statuses.includes('done'));
   });
 
+  it('keeps a capture started during processing alive after processing finishes', async () => {
+    // Reproduces a real session log: the user clicked to keep talking while
+    // the previous dictation was refining; that one finished first.
+    const cfg = makeFakeConfig({ _baseDir: tempBase });
+    loadSkills(cfg.skillsDir);
+    const injections = [];
+    let releaseFirst;
+    let calls = 0;
+    const pipeline = new Pipeline({
+      cfg,
+      provider: makeFakeProvider([]),
+      requestRendererStart: () => {},
+      requestRendererStop: () => {},
+      transcribeAudio: async () => {
+        calls++;
+        if (calls === 1) await new Promise((r) => (releaseFirst = r));
+        return { text: `take ${calls}`, stderr: '', durationMs: 1 };
+      },
+      inject: async (t) => injections.push(t),
+    });
+
+    pipeline.toggle(); // first capture
+    pipeline.toggle(); // stop it
+    const first = pipeline.handleAudioChunk(samplePcm());
+    await new Promise((r) => setImmediate(r));
+    pipeline.toggle(); // second capture starts while the first is processing
+    releaseFirst();
+    await first;
+
+    // First finished; the second capture must now be the live recording.
+    assert.equal(pipeline.isRecording(), true);
+    pipeline.toggle(); // user stops the second capture
+    await pipeline.handleAudioChunk(samplePcm());
+    assert.deepEqual(injections, ['REFINED: take 1', 'REFINED: take 2']);
+    assert.equal(pipeline.isIdle(), true);
+  });
+
   it('push-to-talk asks the renderer not to auto-stop', () => {
     const starts = [];
     const pipeline = new Pipeline({

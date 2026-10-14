@@ -702,14 +702,14 @@ export class Pipeline {
       this.lastErrorAudioBuffer = null;
       this.lastErrorContext = NO_CONTEXT;
       this.state = 'idle';
+      if (this.continueWithNextCapture()) return;
       this.scheduleIdle();
-      this.processNextQueued();
     } catch (err) {
       this.state = 'idle';
       if (err instanceof NoSpeechError) {
         // Accidental tap or silence: nothing to retry, no error toast.
+        if (this.continueWithNextCapture()) return;
         this.setStatus('idle');
-        this.processNextQueued();
         return;
       }
       this.lastErrorSessionDir = session.dir;
@@ -720,9 +720,46 @@ export class Pipeline {
         message,
         sessionDir: session.dir,
       } satisfies ErrorPayload);
+      if (this.continueWithNextCapture()) return;
       this.scheduleIdle(2_500);
-      this.processNextQueued();
     }
+  }
+
+  /**
+   * After a capture finishes processing: run the next queued capture, or — if
+   * the user started a new capture while this one was processing and it is
+   * still going — make that the live recording. Returns false when there is
+   * nothing left to do. Before this, a capture that outlived the processing it
+   * was queued behind had its audio dropped ("audio chunk without active
+   * session") and left the pipeline looking busy forever.
+   */
+  private continueWithNextCapture(): boolean {
+    if (this.audioQueue.length > 0) {
+      this.processNextQueued();
+      return true;
+    }
+    if (!this.backgroundSession) return false;
+
+    const stopping = this.backgroundAudioTimeout !== null;
+    if (this.backgroundAudioTimeout) {
+      clearTimeout(this.backgroundAudioTimeout);
+      this.backgroundAudioTimeout = null;
+    }
+    this.cancelIdle();
+    this.state = 'recording';
+    this.session = this.backgroundSession;
+    this.sessionContext = this.backgroundContext;
+    this.backgroundSession = null;
+    this.backgroundContext = NO_CONTEXT;
+    this.stopRequested = stopping;
+    if (stopping) {
+      // Renderer was already told to stop; its audio is on the way.
+      this.audioTimeout = setTimeout(() => {
+        if (this.state === 'recording') this.reset();
+      }, AUDIO_TIMEOUT_MS);
+    }
+    this.setStatus('recording');
+    return true;
   }
 
   async record(opts: RecordOptions = {}): Promise<ProcessPcmResult> {
