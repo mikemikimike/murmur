@@ -84,6 +84,11 @@ function readEnv(): PartialConfig {
   ) {
     partial.injectionMethod = e.MURMUR_INJECTION_METHOD;
   }
+  if (e.MURMUR_PROGRESSIVE_INJECTION === 'true' || e.MURMUR_PROGRESSIVE_INJECTION === '1') {
+    partial.progressiveInjection = true;
+  } else if (e.MURMUR_PROGRESSIVE_INJECTION === 'false' || e.MURMUR_PROGRESSIVE_INJECTION === '0') {
+    partial.progressiveInjection = false;
+  }
   if (e.MURMUR_LOGS_DIR) partial.logsDir = e.MURMUR_LOGS_DIR;
   if (e.MURMUR_LOG_MODE === 'metadata-only' || e.MURMUR_LOG_MODE === 'full') {
     partial.logMode = e.MURMUR_LOG_MODE;
@@ -254,6 +259,7 @@ export function loadConfig(opts: LoadConfigOptions): LoadedConfig {
     delete seedDefaults.baseUrl;
     delete seedDefaults.model;
     delete seedDefaults.apiKey;
+    delete seedDefaults.progressiveInjection;
     written = writeDefaultConfigIfMissing(configFilePath, seedDefaults);
     if (written) fileLoad = readConfigFile(configFilePath);
   } else if (process.platform !== 'win32' && fileLoad.partial.whisperCliPath) {
@@ -333,6 +339,12 @@ export function loadConfig(opts: LoadConfigOptions): LoadedConfig {
       sources.file.injectionMethod,
       sources.env.injectionMethod,
     ) ?? DEFAULT_CONFIG.injectionMethod;
+  const progressiveInjection =
+    pickFirst(
+      sources.cli.progressiveInjection,
+      sources.file.progressiveInjection,
+      sources.env.progressiveInjection,
+    ) ?? DEFAULT_CONFIG.progressiveInjection;
   const queueMaxDepth =
     pickFirst(sources.cli.queueMaxDepth, sources.file.queueMaxDepth, sources.env.queueMaxDepth) ??
     DEFAULT_CONFIG.queueMaxDepth;
@@ -385,6 +397,8 @@ export function loadConfig(opts: LoadConfigOptions): LoadedConfig {
     clipboardRestoreDelayMs,
     clipboardRetention,
     injectionMethod,
+    progressiveInjection:
+      injectionMethod === 'clipboard' && progressiveInjection ? false : progressiveInjection,
     queueMaxDepth,
     prewarm,
     overlayAnchor: overlay.anchor,
@@ -401,6 +415,12 @@ export function loadConfig(opts: LoadConfigOptions): LoadedConfig {
     skillsDir: resolveLayeredPath(sources, 'skillsDir', DEFAULT_CONFIG.skillsDir),
     configFilePath,
   };
+
+  if (resolved.injectionMethod === 'clipboard' && progressiveInjection) {
+    console.warn(
+      '[config] progressiveInjection is incompatible with injectionMethod "clipboard"; disabling progressive injection',
+    );
+  }
 
   return {
     resolved,
@@ -438,6 +458,7 @@ function computeValueSources(sources: MergeSources): ConfigValueSources {
     'clipboardRestoreDelayMs',
     'clipboardRetention',
     'injectionMethod',
+    'progressiveInjection',
     'queueMaxDepth',
     'prewarm',
     'logMode',
@@ -463,8 +484,6 @@ function computeValueSources(sources: MergeSources): ConfigValueSources {
  */
 function computeOverrides(sources: MergeSources): ConfigOverrides {
   const out: ConfigOverrides = {};
-  // List of editable scalar fields the panel exposes.  Order matters only for
-  // readability; the loop below is field-by-field and side-effect free.
   const fields: (keyof ResolvedConfig)[] = [
     'provider',
     'baseUrl',
@@ -479,6 +498,7 @@ function computeOverrides(sources: MergeSources): ConfigOverrides {
     'clipboardRestoreDelayMs',
     'clipboardRetention',
     'injectionMethod',
+    'progressiveInjection',
     'queueMaxDepth',
     'prewarm',
     'logMode',

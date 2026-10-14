@@ -3,6 +3,7 @@ import { Key, keyboard } from '@nut-tree-fork/nut-js';
 import { clipboard } from 'electron';
 import { injectGeneratedText } from './clipboard-injection.js';
 import type { ClipboardRetention, InjectionMethod } from './config/index.js';
+import { createProgressiveInjector, type ProgressiveInjector } from './progressive-inject.js';
 
 keyboard.config.autoDelayMs = 10;
 
@@ -26,5 +27,11 @@ export async function pasteAtCursor(text: string, opts: InjectOptions): Promise<
     },
     sleep,
     logger: console,
+  });
+}
+
+export function createTypedProgressiveInjector(): ProgressiveInjector {
+  return createProgressiveInjector({
+    typeFn: (text: string) => keyboard.type(text),
   });
 }

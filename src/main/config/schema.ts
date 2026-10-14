@@ -41,6 +41,7 @@ export interface ResolvedConfig {
   clipboardRestoreDelayMs: number;
   clipboardRetention: ClipboardRetention;
   injectionMethod: InjectionMethod;
+  progressiveInjection: boolean;
   queueMaxDepth: number;
   prewarm: boolean;
 
@@ -94,6 +95,7 @@ export interface PartialConfig {
   clipboardRestoreDelayMs?: number;
   clipboardRetention?: ClipboardRetention;
   injectionMethod?: InjectionMethod;
+  progressiveInjection?: boolean;
   queueMaxDepth?: number;
   prewarm?: boolean;
 
@@ -181,6 +183,10 @@ export function sanitizePartial(input: unknown, source: string): PartialConfig {
 
   const injectionMethod = pick(obj.injectionMethod, VALID_INJECTION_METHODS);
   if (injectionMethod) out.injectionMethod = injectionMethod;
+
+  if (typeof obj.progressiveInjection === 'boolean') {
+    out.progressiveInjection = obj.progressiveInjection;
+  }
 
   if (isNumber(obj.queueMaxDepth) && obj.queueMaxDepth >= 1) {
     out.queueMaxDepth = Math.floor(obj.queueMaxDepth);

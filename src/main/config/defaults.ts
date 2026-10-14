@@ -50,6 +50,7 @@ export const DEFAULT_CONFIG: Required<Omit<PartialConfig, 'apiKey' | 'overlay'>>
   clipboardRestoreDelayMs: 150,
   clipboardRetention: 'keep-generated' as const,
   injectionMethod: 'auto' as const,
+  progressiveInjection: false,
   queueMaxDepth: 3,
   prewarm: true,
 

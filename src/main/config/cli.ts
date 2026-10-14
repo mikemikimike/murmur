@@ -103,6 +103,11 @@ export function parseCli(argv: readonly string[]): CliResult {
   }
   if (typeof raw['injection-method'] === 'string')
     candidate.injectionMethod = raw['injection-method'];
+  if (raw['progressive-injection'] === true || raw['progressive-injection'] === 'true') {
+    candidate.progressiveInjection = true;
+  } else if (raw['progressive-injection'] === 'false') {
+    candidate.progressiveInjection = false;
+  }
   if (typeof raw['logs-dir'] === 'string') candidate.logsDir = raw['logs-dir'];
   if (typeof raw['log-mode'] === 'string') candidate.logMode = raw['log-mode'];
   if (typeof raw['skills-dir'] === 'string') candidate.skillsDir = raw['skills-dir'];
@@ -175,6 +180,7 @@ Hotkeys (combo strings parsed from "Ctrl+Shift+Space" form):
   --toggle-hotkey <combo>             Show/hide overlay (default Ctrl+Shift+H)
   --injection-method <auto|clipboard|type>
                                       How generated prompts are inserted
+  --progressive-injection             Type tokens into the cursor as they stream (requires type/auto method)
   --clipboard-retention <keep-generated|restore-previous>
                                       Keep generated text on clipboard after paste, or restore old clipboard
 

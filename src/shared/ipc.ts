@@ -57,6 +57,7 @@ export interface InfoPayload {
   toggleHotkeyCombo: string;
   configFilePath: string;
   controlPanelUrl: string;
+  progressiveInjection: boolean;
 }
 
 export interface ErrorPayload {

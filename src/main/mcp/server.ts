@@ -148,7 +148,7 @@ function registerMurmurTools(
     'murmur_record',
     {
       description:
-        'Record a voice prompt and return the refined text. Starts recording immediately; call murmur_stop_record or pass duration_ms to auto-stop. Streams partial transcription and refinement tokens as logging notifications.',
+        'Record a voice prompt and return the refined text. Starts recording immediately; call murmur_stop_record or pass duration_ms to auto-stop. Streams partial transcription and refinement tokens as logging notifications. When progressive injection is enabled, tokens are also typed at the cursor as they stream.',
       inputSchema: recordSchema,
     },
     recordHandler,

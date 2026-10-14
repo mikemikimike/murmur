@@ -29,7 +29,7 @@ import {
 } from './config/index.js';
 import { type ServerHandle, startControlPanelServer } from './control-panel/server.js';
 import { HotkeyService } from './hotkey.js';
-import { pasteAtCursor } from './inject.js';
+import { createTypedProgressiveInjector, pasteAtCursor } from './inject.js';
 import { type McpServerHandle, startMcpServer } from './mcp/server.js';
 import {
   createOverlayWindow,
@@ -111,6 +111,7 @@ function buildInfo(l: LoadedConfig, controlPanelUrl: string): InfoPayload {
     toggleHotkeyCombo: r.toggleHotkeyCombo,
     configFilePath: r.configFilePath,
     controlPanelUrl,
+    progressiveInjection: r.progressiveInjection,
   };
 }
 
@@ -344,6 +345,7 @@ function createMainPipeline(): Pipeline {
     },
     inject: pasteAtCursor,
     createRecorder: () => new CommandAudioRecorder({ commandLine: cfg.recorderCommand }),
+    createProgressiveInjector: createTypedProgressiveInjector,
   });
 }
 

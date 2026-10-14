@@ -38,6 +38,7 @@ interface InfoView {
   toggleHotkeyCombo: string;
   configFilePath: string;
   controlPanelUrl: string;
+  progressiveInjection: boolean;
 }
 
 interface TokenPayload {
@@ -175,6 +176,10 @@ function renderInfoTooltip(info: InfoView): void {
     tooltipRow('URL', compactUrl(info.baseUrl)),
     tooltipRow('Panel', compactUrl(info.controlPanelUrl)),
   );
+
+  if (info.progressiveInjection) {
+    rows.append(tooltipRow('Inject', 'Progressive'));
+  }
 
   const hotkeys = div('tooltip-row');
   hotkeys.append(div('tooltip-label', 'Keys'));

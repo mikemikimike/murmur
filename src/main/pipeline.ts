@@ -17,6 +17,7 @@ import type { AudioRecorder } from './audio/recorder.js';
 import type { ResolvedConfig } from './config/index.js';
 import type { InjectOptions } from './inject.js';
 import { createSession, type Session } from './logger.js';
+import type { ProgressiveInjector } from './progressive-inject.js';
 import type { LlmProvider } from './providers/index.js';
 import { composeSystemPrompt, loadSkills } from './skills.js';
 import { type TranscribeResult, transcribe } from './transcribe.js';
@@ -60,6 +61,7 @@ export interface PipelineDeps {
   inject?: (text: string, opts: InjectOptions) => Promise<void>;
   transcribeAudio?: typeof transcribe;
   createRecorder?: () => AudioRecorder;
+  createProgressiveInjector?: () => ProgressiveInjector;
 }
 
 interface QueuedCapture {
@@ -330,6 +332,7 @@ export class Pipeline {
     }
 
     const { cfg, provider } = this.deps;
+    const useProgressive = cfg.progressiveInjection && !!this.deps.createProgressiveInjector;
     const skills = loadSkills(cfg.skillsDir);
     const activeSkillIds = skillIds ?? this.lastSkillIds;
     const composed = composeSystemPrompt(cfg.systemPrompt, skills, activeSkillIds);
@@ -339,6 +342,10 @@ export class Pipeline {
       provider: provider.config.id,
       source: 'refine-last',
     };
+    let injector: ProgressiveInjector | null = null;
+    if (useProgressive) {
+      injector = this.deps.createProgressiveInjector?.() ?? null;
+    }
 
     try {
       this.setStatus('refining-streaming');
@@ -353,7 +360,10 @@ export class Pipeline {
           userPrompt: this.lastTranscription,
         },
         {
-          onToken: (token) => this.emitToken(token, 'refinement'),
+          onToken: (token) => {
+            this.emitToken(token, 'refinement');
+            if (injector) injector.pushToken(token);
+          },
         },
       );
       timings.refineMs = Date.now() - rStart;
@@ -361,16 +371,22 @@ export class Pipeline {
 
       if (!refined) throw new Error(`${provider.config.displayName} returned empty refinement`);
 
-      const injectFn = this.deps.inject;
-      if (injectFn) {
-        this.setStatus('injecting');
+      if (injector) {
         const iStart = Date.now();
-        await injectFn(refined, {
-          clipboardRestoreDelayMs: cfg.clipboardRestoreDelayMs,
-          clipboardRetention: cfg.clipboardRetention,
-          injectionMethod: cfg.injectionMethod,
-        });
+        await injector.flush();
         timings.injectMs = Date.now() - iStart;
+      } else {
+        const injectFn = this.deps.inject;
+        if (injectFn) {
+          this.setStatus('injecting');
+          const iStart = Date.now();
+          await injectFn(refined, {
+            clipboardRestoreDelayMs: cfg.clipboardRestoreDelayMs,
+            clipboardRetention: cfg.clipboardRetention,
+            injectionMethod: cfg.injectionMethod,
+          });
+          timings.injectMs = Date.now() - iStart;
+        }
       }
 
       timings.totalMs = Date.now() - pipelineStart;
@@ -379,6 +395,7 @@ export class Pipeline {
       this.scheduleIdle();
       return refined;
     } catch (err) {
+      if (injector) injector.abort();
       console.error('[pipeline] refineLast error:', err);
       session.writeError(err);
       timings.totalMs = Date.now() - pipelineStart;
@@ -396,10 +413,17 @@ export class Pipeline {
   ): Promise<ProcessPcmResult> {
     const { cfg, provider } = this.deps;
     const shouldInject = opts.inject ?? true;
+    const useProgressive =
+      shouldInject && cfg.progressiveInjection && !!this.deps.createProgressiveInjector;
     const session = existingSession ?? createSession(cfg.logsDir, cfg.logMode);
     const timings: Record<string, number | string> = { provider: provider.config.id };
     const pipelineStart = Date.now();
     let transientWavPath: string | null = null;
+    let injector: ProgressiveInjector | null = null;
+
+    if (useProgressive) {
+      injector = this.deps.createProgressiveInjector?.() ?? null;
+    }
 
     try {
       const pcm = Buffer.isBuffer(buffer) ? buffer : Buffer.from(buffer);
@@ -450,7 +474,10 @@ export class Pipeline {
           userPrompt: transcription,
         },
         {
-          onToken: (token) => this.emitToken(token, 'refinement'),
+          onToken: (token) => {
+            this.emitToken(token, 'refinement');
+            if (injector) injector.pushToken(token);
+          },
         },
       );
       timings.refineMs = Date.now() - rStart;
@@ -461,7 +488,11 @@ export class Pipeline {
 
       if (!refined) throw new Error(`${provider.config.displayName} returned empty refinement`);
 
-      if (shouldInject) {
+      if (injector) {
+        const iStart = Date.now();
+        await injector.flush();
+        timings.injectMs = Date.now() - iStart;
+      } else if (shouldInject) {
         const injectFn = this.deps.inject;
         if (!injectFn) {
           throw new Error('inject is not configured');
@@ -483,6 +514,7 @@ export class Pipeline {
       this.setStatus('done');
       return { text: refined, transcription, sessionDir: session.dir };
     } catch (err) {
+      if (injector) injector.abort();
       if (cfg.logMode !== 'full' && transientWavPath) rmSync(transientWavPath, { force: true });
       console.error('[pipeline] error:', err);
       session.writeError(err);
