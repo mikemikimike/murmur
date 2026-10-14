@@ -36,6 +36,19 @@ export function isOnPath(bin: string): boolean {
 }
 
 /**
+ * True if `child` is `parent` itself or lives somewhere beneath it, after
+ * resolving `..` segments. Case-insensitive on Windows.
+ */
+export function isPathInside(child: string, parent: string): boolean {
+  const norm = (p: string) => {
+    const resolved = path.resolve(p);
+    return process.platform === 'win32' ? resolved.toLowerCase() : resolved;
+  };
+  const rel = path.relative(norm(parent), norm(child));
+  return rel === '' || (!rel.startsWith('..') && !path.isAbsolute(rel));
+}
+
+/**
  * Returns true if the configured whisper binary is reachable — either as an
  * existing file (absolute path or cwd-relative) or as a bare command on `PATH`.
  *

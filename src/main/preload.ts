@@ -22,8 +22,14 @@ import {
   IPC_STOP_RECORDING,
   IPC_TOGGLE_RECORDING,
   IPC_TOKEN,
+  IPC_VAD_CONFIG,
+  IPC_VAD_MODE,
+  IPC_VAD_SILENCE_TIMEOUT,
+  IPC_VAD_SPEECH_START,
   type Status,
   type TokenPayload,
+  type VadConfigPayload,
+  type VadModePayload,
 } from '../shared/ipc.js';
 
 contextBridge.exposeInMainWorld('murmur', {
@@ -86,5 +92,17 @@ contextBridge.exposeInMainWorld('murmur', {
   },
   openLogDir: (dir: string) => {
     ipcRenderer.send(IPC_OPEN_LOG_DIR, dir);
+  },
+  onVadConfig: (cb: (cfg: VadConfigPayload) => void) => {
+    ipcRenderer.on(IPC_VAD_CONFIG, (_evt, cfg: VadConfigPayload) => cb(cfg));
+  },
+  onVadMode: (cb: (mode: VadModePayload) => void) => {
+    ipcRenderer.on(IPC_VAD_MODE, (_evt, mode: VadModePayload) => cb(mode));
+  },
+  vadSpeechStart: () => {
+    ipcRenderer.send(IPC_VAD_SPEECH_START);
+  },
+  vadSilenceTimeout: () => {
+    ipcRenderer.send(IPC_VAD_SILENCE_TIMEOUT);
   },
 });

@@ -10,6 +10,7 @@ import {
   updateConfigFile,
 } from '../config/index.js';
 import { sanitizePartial } from '../config/schema.js';
+import { hasLoopbackHost, isLoopbackHostname } from '../http-guard.js';
 import { PROVIDER_PRESETS } from '../providers/index.js';
 import {
   composeSystemPrompt,
@@ -134,6 +135,15 @@ function publicConfig(cfg: ResolvedConfig): Record<string, unknown> {
     clipboardRestoreDelayMs: cfg.clipboardRestoreDelayMs,
     clipboardRetention: cfg.clipboardRetention,
     injectionMethod: cfg.injectionMethod,
+    progressiveInjection: cfg.progressiveInjection,
+    vadEnabled: cfg.vadEnabled,
+    vadThresholdDb: cfg.vadThresholdDb,
+    vadSilenceMs: cfg.vadSilenceMs,
+    vadLeadInMs: cfg.vadLeadInMs,
+    contextCapture: cfg.contextCapture,
+    clipboardContextEntries: cfg.clipboardContextEntries,
+    screenshotContext: cfg.screenshotContext,
+    appSkillRoutes: cfg.appSkillRoutes,
     overlayAnchor: cfg.overlayAnchor,
     overlayOffsetX: cfg.overlayOffsetX,
     overlayOffsetY: cfg.overlayOffsetY,
@@ -143,6 +153,7 @@ function publicConfig(cfg: ResolvedConfig): Record<string, unknown> {
     controlPanelPort: cfg.controlPanelPort,
     mcpPort: cfg.mcpPort,
     recorderCommand: cfg.recorderCommand,
+    logMode: cfg.logMode,
     logsDir: cfg.logsDir,
     skillsDir: cfg.skillsDir,
     configFilePath: cfg.configFilePath,
@@ -369,11 +380,21 @@ function mergePatchIntoRaw(raw: Record<string, unknown>, patch: PartialConfig): 
     'clipboardRestoreDelayMs',
     'clipboardRetention',
     'injectionMethod',
+    'progressiveInjection',
+    'vadEnabled',
+    'vadThresholdDb',
+    'vadSilenceMs',
+    'vadLeadInMs',
+    'contextCapture',
+    'clipboardContextEntries',
+    'screenshotContext',
+    'appSkillRoutes',
     'systemPrompt',
     'enabledSkills',
     'controlPanelPort',
     'mcpPort',
     'recorderCommand',
+    'logMode',
     'logsDir',
     'skillsDir',
   ];
@@ -397,10 +418,6 @@ function requestPort(req: IncomingMessage): number | null {
   return address.port;
 }
 
-function isLoopbackHost(hostname: string): boolean {
-  return hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '::1';
-}
-
 function isAllowedOrigin(req: IncomingMessage): boolean {
   const origin = req.headers.origin;
   if (!origin) return true;
@@ -410,7 +427,7 @@ function isAllowedOrigin(req: IncomingMessage): boolean {
     const originPort = parsed.port ? Number(parsed.port) : parsed.protocol === 'https:' ? 443 : 80;
     return (
       (parsed.protocol === 'http:' || parsed.protocol === 'https:') &&
-      isLoopbackHost(parsed.hostname) &&
+      isLoopbackHostname(parsed.hostname) &&
       port !== null &&
       originPort === port
     );
@@ -438,7 +455,9 @@ export function startControlPanelServer(deps: ServerDeps): Promise<ServerHandle>
       const pathname = rawUrl.split('?')[0];
 
       setSecurityHeaders(res, csrfToken);
-      if (!isAllowedOrigin(req)) {
+      // Host check blocks DNS rebinding, which would otherwise let a web page
+      // read /api/state (including the control token) "same-origin".
+      if (!hasLoopbackHost(req) || !isAllowedOrigin(req)) {
         sendError(res, 403, 'origin not allowed');
         return;
       }

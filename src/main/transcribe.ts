@@ -1,11 +1,43 @@
 import { spawn } from 'node:child_process';
-import { readFile } from 'node:fs/promises';
+import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import os from 'node:os';
 import path from 'node:path';
 import { createInterface } from 'node:readline';
 
 export interface TranscribeOptions {
   cliPath: string;
   modelPath: string;
+  /** Kill whisper-cli if it runs longer than this. Defaults to 5 minutes. */
+  timeoutMs?: number;
+}
+
+const DEFAULT_TIMEOUT_MS = 5 * 60_000;
+
+/**
+ * whisper-cli defaults to 4 threads. Measured on a 20-thread CPU with
+ * ggml-base.en (15 s dictation): 4 → 1.88 s, 8 → 1.42 s, 12 → 1.21 s,
+ * 16 → 1.20 s. Half the logical cores (≈ physical cores on SMT CPUs) captures
+ * most of the gain without oversubscribing; small machines keep the default.
+ */
+export function whisperThreadCount(logicalCores = os.availableParallelism()): number {
+  return Math.min(16, Math.max(4, Math.floor(logicalCores / 2)));
+}
+
+// whisper.cpp annotates non-speech segments instead of returning nothing:
+// "[BLANK_AUDIO]", "[ Silence ]", "(upbeat music)", "(coughs)" … Strip them so
+// silence never reaches the LLM (which would happily "refine" the tag).
+const BRACKET_TAG_RE = /\[[^\]\n]*\]/g;
+const PAREN_TAG_RE =
+  /\((?:[a-z ]*\s)?(?:silence|music|applause|laugh\w*|inaudible|noise|static|breath\w*|cough\w*|sigh\w*|blank_audio)\)/gi;
+
+/** Remove whisper's non-speech annotations and collapse leftover whitespace. */
+export function cleanTranscription(text: string): string {
+  return text
+    .replace(BRACKET_TAG_RE, ' ')
+    .replace(PAREN_TAG_RE, ' ')
+    .replace(/[ \t]+/g, ' ')
+    .replace(/ *\n */g, '\n')
+    .trim();
 }
 
 export interface TranscribeResult {
@@ -35,7 +67,7 @@ function parseWhisperLine(line: string): string | null {
   if (NOISE_RE.test(text)) return null;
   if (/^\d+%$/.test(text)) return null;
 
-  return text;
+  return cleanTranscription(text) || null;
 }
 
 export async function transcribe(
@@ -43,33 +75,61 @@ export async function transcribe(
   opts: TranscribeOptions,
   streamOpts?: TranscribeStreamOptions,
 ): Promise<TranscribeResult> {
-  const outPrefix = path.join(path.dirname(wavPath), 'transcription');
-  const args = ['-m', opts.modelPath, '-f', wavPath, '-otxt', '-of', outPrefix, '--print-progress'];
+  // Write whisper's .txt into a private temp dir, never next to the input:
+  // for MCP `murmur_transcribe` the input lives in a user folder, where a
+  // sibling `transcription.txt` would be silently overwritten.
+  const outDir = await mkdtemp(path.join(os.tmpdir(), 'murmur-whisper-'));
+  const outPrefix = path.join(outDir, 'transcription');
+  const args = [
+    '-m',
+    opts.modelPath,
+    '-f',
+    wavPath,
+    '-t',
+    String(whisperThreadCount()),
+    '-otxt',
+    '-of',
+    outPrefix,
+    '--print-progress',
+  ];
+  const timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
 
   const started = Date.now();
   let stderr = '';
 
-  await new Promise<void>((resolve, reject) => {
-    const proc = spawn(opts.cliPath, args, { windowsHide: true });
+  try {
+    await new Promise<void>((resolve, reject) => {
+      const proc = spawn(opts.cliPath, args, { windowsHide: true });
+      const timer = setTimeout(() => {
+        proc.kill();
+        reject(new Error(`whisper-cli timed out after ${Math.round(timeoutMs / 1000)}s`));
+      }, timeoutMs);
 
-    if (streamOpts?.onToken && proc.stdout) {
-      const rl = createInterface({ input: proc.stdout });
-      rl.on('line', (line: string) => {
-        const token = parseWhisperLine(line);
-        if (token) streamOpts.onToken(`${token} `);
+      if (streamOpts?.onToken && proc.stdout) {
+        const rl = createInterface({ input: proc.stdout });
+        rl.on('line', (line: string) => {
+          const token = parseWhisperLine(line);
+          if (token) streamOpts.onToken(`${token} `);
+        });
+      }
+
+      proc.stderr.on('data', (b: Buffer) => {
+        stderr += b.toString();
       });
-    }
-
-    proc.stderr.on('data', (b: Buffer) => {
-      stderr += b.toString();
+      proc.on('error', (err) => {
+        clearTimeout(timer);
+        reject(err);
+      });
+      proc.on('close', (code) => {
+        clearTimeout(timer);
+        if (code === 0) resolve();
+        else reject(new Error(`whisper-cli exited with code ${code}. stderr:\n${stderr}`));
+      });
     });
-    proc.on('error', reject);
-    proc.on('close', (code) => {
-      if (code === 0) resolve();
-      else reject(new Error(`whisper-cli exited with code ${code}. stderr:\n${stderr}`));
-    });
-  });
 
-  const text = (await readFile(`${outPrefix}.txt`, 'utf8')).trim();
-  return { text, stderr, durationMs: Date.now() - started };
+    const text = cleanTranscription(await readFile(`${outPrefix}.txt`, 'utf8'));
+    return { text, stderr, durationMs: Date.now() - started };
+  } finally {
+    await rm(outDir, { recursive: true, force: true }).catch(() => undefined);
+  }
 }

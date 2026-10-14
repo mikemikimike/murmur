@@ -9,14 +9,19 @@ import {
   IPC_STATUS,
   IPC_STOP_RECORDING,
   IPC_TOKEN,
+  IPC_VAD_MODE,
   type Status,
   type TokenPayload,
   type TokenPhase,
+  type VadModePayload,
 } from '../shared/ipc.js';
+import { peakWindowRmsDb } from '../shared/pcm.js';
 import type { AudioRecorder } from './audio/recorder.js';
 import type { ResolvedConfig } from './config/index.js';
+import { type CapturedContext, routeSkills, withContext } from './context/index.js';
 import type { InjectOptions } from './inject.js';
 import { createSession, type Session } from './logger.js';
+import type { ProgressiveInjector } from './progressive-inject.js';
 import type { LlmProvider } from './providers/index.js';
 import { composeSystemPrompt, loadSkills } from './skills.js';
 import { type TranscribeResult, transcribe } from './transcribe.js';
@@ -26,6 +31,20 @@ type PipelineState = 'idle' | 'recording' | 'processing';
 
 const AUDIO_TIMEOUT_MS = 10_000;
 const STATUS_LINGER_MS = 1_500;
+/** Captures shorter than this are accidental hotkey taps, not prompts. */
+const MIN_SPEECH_MS = 250;
+
+/**
+ * Thrown when a capture contains no speech (too short, or whisper only heard
+ * silence/noise). The hotkey flow treats it as a quiet no-op instead of an
+ * error; programmatic callers (MCP) still receive it as a rejection.
+ */
+export class NoSpeechError extends Error {
+  constructor() {
+    super('no speech detected');
+    this.name = 'NoSpeechError';
+  }
+}
 
 export interface ProcessPcmResult {
   text: string;
@@ -36,7 +55,12 @@ export interface ProcessPcmResult {
 export interface ProcessPcmOptions {
   inject?: boolean;
   skillIds?: string[];
+  /** Context snapshotted when the capture started (resolved after whisper runs). */
+  context?: Promise<CapturedContext | null>;
 }
+
+/** How a capture was started: held hotkey, or click/toggle (VAD may auto-stop it). */
+export type CaptureMode = 'ptt' | 'toggle';
 
 export interface RefineTextOptions {
   skillIds?: string[];
@@ -55,16 +79,21 @@ export interface PipelineDeps {
   onStatus?: (s: Status) => void;
   emitStatus?: (s: Status) => void;
   onToken?: (token: string, phase: TokenPhase) => void;
-  requestRendererStart?: () => void;
+  requestRendererStart?: (autoStop: boolean) => void;
   requestRendererStop?: () => void;
   inject?: (text: string, opts: InjectOptions) => Promise<void>;
   transcribeAudio?: typeof transcribe;
   createRecorder?: () => AudioRecorder;
+  createProgressiveInjector?: () => ProgressiveInjector;
+  whisperSupportsStreaming?: boolean;
+  /** Snapshot active window / clipboard / screenshot when a capture starts. */
+  captureContext?: () => Promise<CapturedContext | null>;
 }
 
 interface QueuedCapture {
   session: Session;
   buffer: ArrayBuffer;
+  context: Promise<CapturedContext | null>;
 }
 
 interface PendingHeadlessRecord {
@@ -72,6 +101,8 @@ interface PendingHeadlessRecord {
   session: Session;
   processOpts: ProcessPcmOptions;
 }
+
+const NO_CONTEXT: Promise<CapturedContext | null> = Promise.resolve(null);
 
 export class Pipeline {
   private state: PipelineState = 'idle';
@@ -90,9 +121,39 @@ export class Pipeline {
   private pendingHeadlessReject: ((err: unknown) => void) | null = null;
   private tokenListeners = new Set<(token: string, phase: TokenPhase) => void>();
   private lastTranscription: string | null = null;
-  private lastSkillIds: string[] = [];
+  private lastContext: CapturedContext | null = null;
+  private lastErrorContext: Promise<CapturedContext | null> = NO_CONTEXT;
+  private sessionContext: Promise<CapturedContext | null> = NO_CONTEXT;
+  private backgroundContext: Promise<CapturedContext | null> = NO_CONTEXT;
+  private currentStatus: Status = 'idle';
+  private statusBeforeQueueFull: Status = 'idle';
+  private stopRequested = false;
 
   constructor(private readonly deps: PipelineDeps) {}
+
+  /** Start a context snapshot for a capture that is beginning now. Never rejects. */
+  private beginContext(): Promise<CapturedContext | null> {
+    const capture = this.deps.captureContext;
+    if (!capture) return NO_CONTEXT;
+    return capture().catch((err) => {
+      console.warn('[pipeline] context capture failed (continuing without it):', err);
+      return null;
+    });
+  }
+
+  /**
+   * Carry user-facing history over from a pipeline this one replaces (config
+   * reloads rebuild the pipeline). Without this, saving a skill or prompt
+   * change in the control panel would wipe "Refine last" and "Retry" — exactly
+   * when the user wants to re-run with the new settings.
+   */
+  inheritFrom(prev: Pipeline): void {
+    this.lastTranscription = prev.lastTranscription;
+    this.lastContext = prev.lastContext;
+    this.lastErrorSessionDir = prev.lastErrorSessionDir;
+    this.lastErrorAudioBuffer = prev.lastErrorAudioBuffer;
+    this.lastErrorContext = prev.lastErrorContext;
+  }
 
   addTokenListener(fn: (token: string, phase: TokenPhase) => void): void {
     this.tokenListeners.add(fn);
@@ -133,6 +194,7 @@ export class Pipeline {
   }
 
   private setStatus(s: Status): void {
+    this.currentStatus = s;
     this.deps.getWindow?.()?.webContents.send(IPC_STATUS, s);
     this.deps.emitStatus?.(s);
     this.deps.onStatus?.(s);
@@ -147,9 +209,11 @@ export class Pipeline {
     }
   }
 
-  private requestRendererStart(): void {
-    this.deps.requestRendererStart?.();
-    this.deps.getWindow?.()?.webContents.send(IPC_START_RECORDING);
+  private requestRendererStart(autoStop: boolean): void {
+    this.deps.requestRendererStart?.(autoStop);
+    const win = this.deps.getWindow?.();
+    win?.webContents.send(IPC_VAD_MODE, { autoStop } satisfies VadModePayload);
+    win?.webContents.send(IPC_START_RECORDING);
   }
 
   private requestRendererStop(): void {
@@ -180,8 +244,14 @@ export class Pipeline {
     const max = this.deps.cfg.queueMaxDepth;
     if (this.audioQueue.length >= max) {
       this.audioQueue.shift();
+      // Flash "queue full", then restore whatever phase we were in — unless the
+      // pipeline has moved on meanwhile (otherwise an idle overlay would get
+      // stuck showing a stale "Transcribing…").
+      if (this.currentStatus !== 'queue-full') this.statusBeforeQueueFull = this.currentStatus;
       this.setStatus('queue-full');
-      setTimeout(() => this.setStatus('transcribing'), 1_500);
+      setTimeout(() => {
+        if (this.currentStatus === 'queue-full') this.setStatus(this.statusBeforeQueueFull);
+      }, 1_500);
     }
     this.audioQueue.push(item);
     this.sendQueueDepth();
@@ -191,7 +261,7 @@ export class Pipeline {
     const next = this.audioQueue.shift();
     if (!next) return;
     this.sendQueueDepth();
-    this.processBuffer(next.session, next.buffer).catch((err) => {
+    this.processBuffer(next.session, next.buffer, next.context).catch((err) => {
       console.error('[pipeline] queued item crashed:', err);
     });
   }
@@ -204,7 +274,12 @@ export class Pipeline {
     return skillIds ?? this.deps.cfg.enabledSkills;
   }
 
-  start(): void {
+  /**
+   * Begin an overlay capture. With VAD on, the overlay shows "Listening…"
+   * until the renderer reports speech ({@link speechStarted}); in toggle mode
+   * it also ends the capture itself after a silence ({@link vadSilence}).
+   */
+  start(mode: CaptureMode = 'ptt'): void {
     if (this.hasHeadlessPending()) {
       console.warn('[pipeline] start ignored: headless recording active');
       return;
@@ -215,10 +290,30 @@ export class Pipeline {
     }
     this.cancelIdle();
     this.state = 'recording';
+    this.stopRequested = false;
     this.session = createSession(this.deps.cfg.logsDir, this.deps.cfg.logMode);
-    console.log(`[pipeline] session=${this.session.dir}`);
-    this.setStatus('recording');
-    this.requestRendererStart();
+    this.sessionContext = this.beginContext();
+    console.log(`[pipeline] session=${this.session.dir} mode=${mode}`);
+    this.setStatus(this.deps.cfg.vadEnabled ? 'vad-listening' : 'recording');
+    this.requestRendererStart(mode === 'toggle');
+  }
+
+  /** Renderer VAD heard the first speech of the current capture. */
+  speechStarted(): void {
+    if (this.state === 'recording' && this.currentStatus === 'vad-listening') {
+      this.setStatus('recording');
+    }
+  }
+
+  /** Renderer VAD saw a long enough silence after speech in a toggle capture. */
+  vadSilence(): void {
+    if (this.hasHeadlessPending()) return;
+    if (this.state === 'recording') {
+      console.log('[pipeline] VAD silence: auto-stopping');
+      this.stop();
+    } else if (this.state === 'processing' && this.backgroundSession !== null) {
+      this.stopBackgroundCapture();
+    }
   }
 
   stop(): void {
@@ -230,6 +325,9 @@ export class Pipeline {
       console.warn(`[pipeline] stop ignored: state=${this.state}`);
       return;
     }
+    // VAD auto-stop and a manual click can race; only stop the renderer once.
+    if (this.stopRequested) return;
+    this.stopRequested = true;
     this.requestRendererStop();
 
     this.audioTimeout = setTimeout(() => {
@@ -243,27 +341,40 @@ export class Pipeline {
   toggle(): void {
     if (this.hasHeadlessPending()) return;
     if (this.state === 'idle') {
-      this.start();
+      this.start('toggle');
     } else if (this.state === 'recording') {
       this.stop();
     } else if (this.state === 'processing') {
       if (this.backgroundSession === null) {
         this.backgroundSession = createSession(this.deps.cfg.logsDir, this.deps.cfg.logMode);
-        this.requestRendererStart();
-        this.backgroundAudioTimeout = setTimeout(() => {
-          console.warn('[pipeline] background recording timed out, discarding');
-          this.backgroundSession = null;
-          this.backgroundAudioTimeout = null;
-        }, AUDIO_TIMEOUT_MS);
+        this.backgroundContext = this.beginContext();
+        this.requestRendererStart(true);
       } else {
-        this.requestRendererStop();
+        this.stopBackgroundCapture();
       }
     }
+  }
+
+  /**
+   * End a capture queued behind an in-flight one. The "no audio arrived"
+   * timeout starts here, at stop — starting it when the capture began
+   * discarded any queued dictation longer than 10 s.
+   */
+  private stopBackgroundCapture(): void {
+    if (this.backgroundAudioTimeout) return; // already stopping
+    this.requestRendererStop();
+    this.backgroundAudioTimeout = setTimeout(() => {
+      console.warn('[pipeline] background recording produced no audio, discarding');
+      this.backgroundSession = null;
+      this.backgroundContext = NO_CONTEXT;
+      this.backgroundAudioTimeout = null;
+    }, AUDIO_TIMEOUT_MS);
   }
 
   private reset(): void {
     this.state = 'idle';
     this.session = null;
+    this.sessionContext = NO_CONTEXT;
     if (this.audioTimeout) {
       clearTimeout(this.audioTimeout);
       this.audioTimeout = null;
@@ -273,6 +384,7 @@ export class Pipeline {
       this.backgroundAudioTimeout = null;
     }
     this.backgroundSession = null;
+    this.backgroundContext = NO_CONTEXT;
     this.setStatus('idle');
   }
 
@@ -321,6 +433,26 @@ export class Pipeline {
     return refined;
   }
 
+  /**
+   * System prompt for a dictation: base prompt + skills (+ app routes) +
+   * captured context. Explicit `skillIds` (MCP callers) are used verbatim;
+   * otherwise the enabled skills are adjusted by `appSkillRoutes` for the app
+   * that was active when the capture started.
+   */
+  private composeForDictation(
+    skillIds: string[] | undefined,
+    ctx: CapturedContext | null,
+  ): { composed: string; activeSkillIds: string[] } {
+    const { cfg } = this.deps;
+    const activeSkillIds =
+      skillIds ?? routeSkills(cfg.enabledSkills, cfg.appSkillRoutes ?? [], ctx?.window ?? null);
+    const composed = withContext(
+      composeSystemPrompt(cfg.systemPrompt, loadSkills(cfg.skillsDir), activeSkillIds),
+      ctx,
+    );
+    return { composed, activeSkillIds };
+  }
+
   async refineLast(skillIds?: string[]): Promise<string> {
     if (!this.lastTranscription) {
       throw new Error('no previous transcription to refine');
@@ -330,30 +462,47 @@ export class Pipeline {
     }
 
     const { cfg, provider } = this.deps;
-    const skills = loadSkills(cfg.skillsDir);
-    const activeSkillIds = skillIds ?? this.lastSkillIds;
-    const composed = composeSystemPrompt(cfg.systemPrompt, skills, activeSkillIds);
+    const useProgressive = cfg.progressiveInjection && !!this.deps.createProgressiveInjector;
+    // Use the skills enabled *now*: the point of refine-last is re-running the
+    // previous dictation after tweaking skills / the prompt in the panel. The
+    // context is the one captured with that dictation.
+    const ctx = this.lastContext;
+    const { composed, activeSkillIds } = this.composeForDictation(skillIds, ctx);
     const session = createSession(cfg.logsDir, cfg.logMode);
     const pipelineStart = Date.now();
     const timings: Record<string, number | string> = {
       provider: provider.config.id,
       source: 'refine-last',
     };
+    let injector: ProgressiveInjector | null = null;
+    if (useProgressive) {
+      injector = this.deps.createProgressiveInjector?.() ?? null;
+    }
 
+    const transcription = this.lastTranscription;
+    // Mark busy so a hotkey press or MCP call can't start a capture mid-refine.
+    this.cancelIdle();
+    this.state = 'processing';
     try {
       this.setStatus('refining-streaming');
-      session.writeTranscription(this.lastTranscription);
+      session.writeTranscription(transcription);
       session.writeSystemPrompt(composed);
       timings.activeSkills = activeSkillIds.join(',') || '(none)';
+
+      if (ctx?.block && cfg.logMode === 'full') session.writeContext(ctx.block);
 
       const rStart = Date.now();
       const { text: refined } = await provider.refineStream(
         {
           systemPrompt: composed,
-          userPrompt: this.lastTranscription,
+          userPrompt: transcription,
+          images: ctx?.images,
         },
         {
-          onToken: (token) => this.emitToken(token, 'refinement'),
+          onToken: (token) => {
+            this.emitToken(token, 'refinement');
+            if (injector) injector.pushToken(token);
+          },
         },
       );
       timings.refineMs = Date.now() - rStart;
@@ -361,28 +510,37 @@ export class Pipeline {
 
       if (!refined) throw new Error(`${provider.config.displayName} returned empty refinement`);
 
-      const injectFn = this.deps.inject;
-      if (injectFn) {
-        this.setStatus('injecting');
+      if (injector) {
         const iStart = Date.now();
-        await injectFn(refined, {
-          clipboardRestoreDelayMs: cfg.clipboardRestoreDelayMs,
-          clipboardRetention: cfg.clipboardRetention,
-          injectionMethod: cfg.injectionMethod,
-        });
+        await injector.flush();
         timings.injectMs = Date.now() - iStart;
+      } else {
+        const injectFn = this.deps.inject;
+        if (injectFn) {
+          this.setStatus('injecting');
+          const iStart = Date.now();
+          await injectFn(refined, {
+            clipboardRestoreDelayMs: cfg.clipboardRestoreDelayMs,
+            clipboardRetention: cfg.clipboardRetention,
+            injectionMethod: cfg.injectionMethod,
+          });
+          timings.injectMs = Date.now() - iStart;
+        }
       }
 
       timings.totalMs = Date.now() - pipelineStart;
       session.writeTimings(timings);
+      this.state = 'idle';
       this.setStatus('done');
       this.scheduleIdle();
       return refined;
     } catch (err) {
+      if (injector) injector.abort();
       console.error('[pipeline] refineLast error:', err);
       session.writeError(err);
       timings.totalMs = Date.now() - pipelineStart;
       session.writeTimings(timings);
+      this.state = 'idle';
       this.setStatus('error');
       this.scheduleIdle(2_500);
       throw err;
@@ -396,10 +554,18 @@ export class Pipeline {
   ): Promise<ProcessPcmResult> {
     const { cfg, provider } = this.deps;
     const shouldInject = opts.inject ?? true;
+    const useProgressive =
+      shouldInject && cfg.progressiveInjection && !!this.deps.createProgressiveInjector;
+    const canStreamWhisper = this.deps.whisperSupportsStreaming ?? true;
     const session = existingSession ?? createSession(cfg.logsDir, cfg.logMode);
     const timings: Record<string, number | string> = { provider: provider.config.id };
     const pipelineStart = Date.now();
     let transientWavPath: string | null = null;
+    let injector: ProgressiveInjector | null = null;
+
+    if (useProgressive) {
+      injector = this.deps.createProgressiveInjector?.() ?? null;
+    }
 
     try {
       const pcm = Buffer.isBuffer(buffer) ? buffer : Buffer.from(buffer);
@@ -410,18 +576,28 @@ export class Pipeline {
       if (cfg.logMode === 'full') session.writeAudio(wav);
       timings.audioBytes = wav.length;
       timings.audioDurationMs = Math.round((pcm.length / 2 / cfg.sampleRate) * 1000);
+      if (timings.audioDurationMs < MIN_SPEECH_MS) throw new NoSpeechError();
+      // Same threshold as the overlay's VAD, applied to every capture path
+      // (overlay, hotkey, MCP's recorder). Whisper turns near-silence into
+      // phantom words ("you", "Thank you."), so never hand it a quiet clip.
+      if (cfg.vadEnabled) {
+        const peakDb = peakWindowRmsDb(pcm, cfg.sampleRate);
+        timings.peakDb = Number.isFinite(peakDb) ? Math.round(peakDb) : 'silent';
+        if (peakDb < cfg.vadThresholdDb) throw new NoSpeechError();
+      }
 
-      this.setStatus('transcribing-streaming');
+      this.setStatus(canStreamWhisper ? 'transcribing-streaming' : 'transcribing');
       const tStart = Date.now();
+      const transcribeOpts = canStreamWhisper
+        ? { onToken: (token: string) => this.emitToken(token, 'transcription') }
+        : undefined;
       const { text: transcription, stderr: whisperStderr } = await this.getTranscribeFn()(
         wavPath,
         {
           cliPath: cfg.whisperCliPath,
           modelPath: cfg.whisperModelPath,
         },
-        {
-          onToken: (token) => this.emitToken(token, 'transcription'),
-        },
+        transcribeOpts,
       );
       timings.transcribeMs = Date.now() - tStart;
       session.writeTranscription(transcription);
@@ -432,25 +608,33 @@ export class Pipeline {
         `[pipeline] transcription complete (${timings.transcribeMs} ms, ${transcription.length} chars)`,
       );
 
-      if (!transcription) throw new Error('whisper returned empty transcription');
+      if (!transcription) throw new NoSpeechError();
 
+      // Context capture started with the recording and has been running in
+      // parallel with whisper; it is almost always ready by now.
+      const ctx = opts.context ? await opts.context : null;
       this.lastTranscription = transcription;
-      this.lastSkillIds = this.resolveSkillIds(opts.skillIds);
+      this.lastContext = ctx;
 
       this.setStatus('refining-streaming');
-      const skills = loadSkills(cfg.skillsDir);
-      const activeSkillIds = this.resolveSkillIds(opts.skillIds);
-      const composed = composeSystemPrompt(cfg.systemPrompt, skills, activeSkillIds);
+      const { composed, activeSkillIds } = this.composeForDictation(opts.skillIds, ctx);
       session.writeSystemPrompt(composed);
+      if (ctx?.block && cfg.logMode === 'full') session.writeContext(ctx.block);
       timings.activeSkills = activeSkillIds.join(',') || '(none)';
+      if (ctx?.window) timings.app = ctx.window.processName;
+      if (ctx?.images.length) timings.images = ctx.images.length;
       const rStart = Date.now();
       const { text: refined } = await provider.refineStream(
         {
           systemPrompt: composed,
           userPrompt: transcription,
+          images: ctx?.images,
         },
         {
-          onToken: (token) => this.emitToken(token, 'refinement'),
+          onToken: (token) => {
+            this.emitToken(token, 'refinement');
+            if (injector) injector.pushToken(token);
+          },
         },
       );
       timings.refineMs = Date.now() - rStart;
@@ -461,7 +645,11 @@ export class Pipeline {
 
       if (!refined) throw new Error(`${provider.config.displayName} returned empty refinement`);
 
-      if (shouldInject) {
+      if (injector) {
+        const iStart = Date.now();
+        await injector.flush();
+        timings.injectMs = Date.now() - iStart;
+      } else if (shouldInject) {
         const injectFn = this.deps.inject;
         if (!injectFn) {
           throw new Error('inject is not configured');
@@ -483,39 +671,95 @@ export class Pipeline {
       this.setStatus('done');
       return { text: refined, transcription, sessionDir: session.dir };
     } catch (err) {
+      if (injector) injector.abort();
       if (cfg.logMode !== 'full' && transientWavPath) rmSync(transientWavPath, { force: true });
+      timings.totalMs = Date.now() - pipelineStart;
+      if (err instanceof NoSpeechError) {
+        console.log('[pipeline] no speech detected, nothing to refine');
+        timings.outcome = 'no-speech';
+        session.writeTimings(timings);
+        throw err;
+      }
       console.error('[pipeline] error:', err);
       session.writeError(err);
-      timings.totalMs = Date.now() - pipelineStart;
       session.writeTimings(timings);
       this.setStatus('error');
       throw err;
     }
   }
 
-  private async processBuffer(session: Session, buffer: ArrayBuffer): Promise<void> {
+  private async processBuffer(
+    session: Session,
+    buffer: ArrayBuffer,
+    context: Promise<CapturedContext | null> = NO_CONTEXT,
+  ): Promise<void> {
     this.cancelIdle();
     this.state = 'processing';
 
     try {
-      await this.processPcm(buffer, { inject: true }, session);
+      await this.processPcm(buffer, { inject: true, context }, session);
       this.lastErrorSessionDir = null;
       this.lastErrorAudioBuffer = null;
+      this.lastErrorContext = NO_CONTEXT;
       this.state = 'idle';
+      if (this.continueWithNextCapture()) return;
       this.scheduleIdle();
-      this.processNextQueued();
     } catch (err) {
+      this.state = 'idle';
+      if (err instanceof NoSpeechError) {
+        // Accidental tap or silence: nothing to retry, no error toast.
+        if (this.continueWithNextCapture()) return;
+        this.setStatus('idle');
+        return;
+      }
       this.lastErrorSessionDir = session.dir;
       this.lastErrorAudioBuffer = buffer.slice(0);
-      this.state = 'idle';
+      this.lastErrorContext = context;
       const message = err instanceof Error ? err.message : String(err);
       this.deps.getWindow?.()?.webContents.send(IPC_ERROR, {
         message,
         sessionDir: session.dir,
       } satisfies ErrorPayload);
+      if (this.continueWithNextCapture()) return;
       this.scheduleIdle(2_500);
-      this.processNextQueued();
     }
+  }
+
+  /**
+   * After a capture finishes processing: run the next queued capture, or — if
+   * the user started a new capture while this one was processing and it is
+   * still going — make that the live recording. Returns false when there is
+   * nothing left to do. Before this, a capture that outlived the processing it
+   * was queued behind had its audio dropped ("audio chunk without active
+   * session") and left the pipeline looking busy forever.
+   */
+  private continueWithNextCapture(): boolean {
+    if (this.audioQueue.length > 0) {
+      this.processNextQueued();
+      return true;
+    }
+    if (!this.backgroundSession) return false;
+
+    const stopping = this.backgroundAudioTimeout !== null;
+    if (this.backgroundAudioTimeout) {
+      clearTimeout(this.backgroundAudioTimeout);
+      this.backgroundAudioTimeout = null;
+    }
+    this.cancelIdle();
+    this.state = 'recording';
+    this.session = this.backgroundSession;
+    this.sessionContext = this.backgroundContext;
+    this.backgroundSession = null;
+    this.backgroundContext = NO_CONTEXT;
+    this.stopRequested = stopping;
+    if (stopping) {
+      // Renderer was already told to stop; its audio is on the way.
+      this.audioTimeout = setTimeout(() => {
+        if (this.state === 'recording') this.reset();
+      }, AUDIO_TIMEOUT_MS);
+    }
+    this.setStatus('recording');
+    return true;
   }
 
   async record(opts: RecordOptions = {}): Promise<ProcessPcmResult> {
@@ -532,6 +776,7 @@ export class Pipeline {
     const processOpts: ProcessPcmOptions = {
       inject: opts.inject ?? false,
       skillIds: opts.skillIds,
+      context: this.beginContext(),
     };
 
     this.headlessRecorder = recorder;
@@ -618,9 +863,11 @@ export class Pipeline {
 
     if (this.state === 'processing' && this.backgroundSession) {
       const session = this.backgroundSession;
+      const context = this.backgroundContext;
       this.backgroundSession = null;
+      this.backgroundContext = NO_CONTEXT;
       if (buffer.byteLength > 0) {
-        this.enqueue({ session, buffer });
+        this.enqueue({ session, buffer, context });
       }
       return;
     }
@@ -637,8 +884,10 @@ export class Pipeline {
     }
 
     const session = this.session;
+    const context = this.sessionContext;
     this.session = null;
-    await this.processBuffer(session, buffer);
+    this.sessionContext = NO_CONTEXT;
+    await this.processBuffer(session, buffer, context);
   }
 
   async retry(): Promise<void> {
@@ -648,10 +897,12 @@ export class Pipeline {
 
     if (this.lastErrorAudioBuffer) {
       const buffer = this.lastErrorAudioBuffer;
+      const context = this.lastErrorContext;
       this.lastErrorAudioBuffer = null;
+      this.lastErrorContext = NO_CONTEXT;
       const session = createSession(this.deps.cfg.logsDir, this.deps.cfg.logMode);
       this.state = 'processing';
-      await this.processBuffer(session, buffer);
+      await this.processBuffer(session, buffer, context);
       return;
     }
 

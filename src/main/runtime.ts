@@ -6,6 +6,7 @@ import { startMcpServer as defaultStartMcpServer, type McpServerHandle } from '.
 import { Pipeline } from './pipeline.js';
 import { runPreflight as defaultRunPreflight, type PreflightResult } from './preflight.js';
 import { createProvider as defaultCreateProvider, type LlmProvider } from './providers/index.js';
+import { probeWhisperStreaming } from './whisper-probe.js';
 
 const CONFIG_RELOAD_RETRY_MS = 250;
 
@@ -32,7 +33,11 @@ export interface CreateRuntimeOptions {
   startMcpServer?: typeof defaultStartMcpServer;
 }
 
-function createHeadlessPipeline(cfg: ResolvedConfig, provider: LlmProvider): Pipeline {
+function createHeadlessPipeline(
+  cfg: ResolvedConfig,
+  provider: LlmProvider,
+  whisperStreaming: boolean,
+): Pipeline {
   return new Pipeline({
     cfg,
     provider,
@@ -41,6 +46,7 @@ function createHeadlessPipeline(cfg: ResolvedConfig, provider: LlmProvider): Pip
       throw new Error('injection is unavailable in headless serve mode');
     },
     createRecorder: () => new CommandAudioRecorder({ commandLine: cfg.recorderCommand }),
+    whisperSupportsStreaming: whisperStreaming,
   });
 }
 
@@ -55,7 +61,11 @@ export async function createRuntime(opts: CreateRuntimeOptions): Promise<Runtime
     throw new Error(`preflight failed:\n${preflight.messages.map((m) => `  - ${m}`).join('\n')}`);
   }
 
-  let pipeline = createHeadlessPipeline(loaded.resolved, provider);
+  const whisperProbe = await probeWhisperStreaming(loaded.resolved.whisperCliPath);
+  const whisperStreaming = whisperProbe.supportsStreaming;
+  console.log(`[murmur] whisper streaming: ${whisperStreaming ? 'supported' : 'not supported'}`);
+
+  let pipeline = createHeadlessPipeline(loaded.resolved, provider, whisperStreaming);
   let reloadTimer: NodeJS.Timeout | null = null;
 
   const applyConfigReload = (): void => {
@@ -75,7 +85,9 @@ export async function createRuntime(opts: CreateRuntimeOptions): Promise<Runtime
       return;
     }
 
-    pipeline = createHeadlessPipeline(loaded.resolved, provider);
+    const previous = pipeline;
+    pipeline = createHeadlessPipeline(loaded.resolved, provider, whisperStreaming);
+    pipeline.inheritFrom(previous);
     console.log(
       `[murmur] config reloaded: provider=${loaded.resolved.provider} model=${loaded.resolved.model}`,
     );

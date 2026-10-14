@@ -50,8 +50,20 @@ export const DEFAULT_CONFIG: Required<Omit<PartialConfig, 'apiKey' | 'overlay'>>
   clipboardRestoreDelayMs: 150,
   clipboardRetention: 'keep-generated' as const,
   injectionMethod: 'auto' as const,
+  progressiveInjection: false,
   queueMaxDepth: 3,
   prewarm: true,
+
+  vadEnabled: true,
+  vadThresholdDb: -40,
+  // 900 ms cut people off during ordinary thinking pauses.
+  vadSilenceMs: 1500,
+  vadLeadInMs: 300,
+
+  contextCapture: false,
+  clipboardContextEntries: 0,
+  screenshotContext: false,
+  appSkillRoutes: [],
 
   overlay: {
     anchor: 'bottom-center',

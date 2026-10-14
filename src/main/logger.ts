@@ -11,6 +11,7 @@ export interface Session {
   writeRefined(text: string): void;
   writeError(err: unknown): void;
   writeTimings(timings: Record<string, number | string>): void;
+  writeContext(context: string): void;
 }
 
 function timestampDirName(d: Date): string {
@@ -54,6 +55,9 @@ export function createSession(logsDir: string, logMode: LogMode = 'metadata-only
     },
     writeTimings(timings) {
       writeFileSync(path.join(dir, 'timings.json'), JSON.stringify(timings, null, 2), 'utf8');
+    },
+    writeContext(context) {
+      writeFileSync(path.join(dir, 'context.txt'), context, 'utf8');
     },
   };
 }

@@ -66,9 +66,9 @@ function makeFakeProvider(refinements) {
   };
 }
 
-/** Minimal 16-bit mono PCM (~10 ms at 16 kHz). */
-function samplePcm() {
-  const pcm = Buffer.alloc(320, 0);
+/** 16-bit mono PCM, 1 s at 16 kHz (above the pipeline's minimum speech length). */
+function samplePcm(bytes = 32_000) {
+  const pcm = Buffer.alloc(bytes, 0);
   for (let i = 0; i < pcm.length; i += 2) pcm.writeInt16LE(1000, i);
   return pcm.buffer.slice(pcm.byteOffset, pcm.byteOffset + pcm.byteLength);
 }
@@ -336,6 +336,276 @@ describe('Pipeline overlay path', () => {
 
     await pending;
     assert.equal(rendererStops.length, 0);
+  });
+
+  it('treats an empty transcription as no speech: no refine, no inject, no error', async () => {
+    const cfg = makeFakeConfig({ _baseDir: tempBase });
+    loadSkills(cfg.skillsDir);
+    const statuses = [];
+    const refinements = [];
+    const injections = [];
+    const sent = [];
+
+    const pipeline = new Pipeline({
+      cfg,
+      provider: makeFakeProvider(refinements),
+      emitStatus: (s) => statuses.push(s),
+      getWindow: () => ({ webContents: { send: (ch, payload) => sent.push([ch, payload]) } }),
+      requestRendererStart: () => {},
+      transcribeAudio: async () => ({ text: '', stderr: '', durationMs: 1 }),
+      inject: async (text) => injections.push(text),
+    });
+
+    pipeline.start();
+    await pipeline.handleAudioChunk(samplePcm());
+
+    assert.equal(refinements.length, 0);
+    assert.equal(injections.length, 0);
+    assert.equal(statuses.includes('error'), false);
+    assert.equal(statuses.at(-1), 'idle');
+    assert.equal(
+      sent.some(([ch]) => ch === 'murmur:error'),
+      false,
+    );
+    assert.equal(pipeline.isIdle(), true);
+    assert.equal(pipeline.hasLastTranscription(), false);
+  });
+
+  it('skips whisper entirely for an accidental tap', async () => {
+    const cfg = makeFakeConfig({ _baseDir: tempBase });
+    let transcribed = false;
+    const pipeline = new Pipeline({
+      cfg,
+      provider: makeFakeProvider([]),
+      transcribeAudio: async () => {
+        transcribed = true;
+        return { text: 'should not run', stderr: '', durationMs: 1 };
+      },
+    });
+
+    // 100 ms of audio
+    await assert.rejects(pipeline.processPcm(samplePcm(3_200), { inject: false }), {
+      name: 'NoSpeechError',
+    });
+    assert.equal(transcribed, false);
+  });
+
+  it('refineLast uses the currently enabled skills and blocks new captures', async () => {
+    const cfg = makeFakeConfig({ _baseDir: tempBase, enabledSkills: [] });
+    loadSkills(cfg.skillsDir);
+    const refinements = [];
+    let release;
+    const provider = makeFakeProvider(refinements);
+    const pipeline = new Pipeline({
+      cfg,
+      provider,
+      requestRendererStart: () => {
+        throw new Error('capture must not start while refine-last runs');
+      },
+      transcribeAudio: async () => ({ text: 'first take', stderr: '', durationMs: 1 }),
+      inject: async () => {},
+    });
+
+    await pipeline.processPcm(samplePcm(), { inject: false });
+
+    // User enables a skill in the panel, then hits "Refine last".
+    cfg.enabledSkills = ['concise-output'];
+    const gate = new Promise((r) => {
+      release = r;
+    });
+    provider.refineStream = async ({ systemPrompt, userPrompt }) => {
+      refinements.push({ systemPrompt, userPrompt });
+      await gate;
+      return { text: `AGAIN: ${userPrompt}`, durationMs: 1 };
+    };
+    const pending = pipeline.refineLast();
+    await Promise.resolve();
+
+    assert.equal(pipeline.isBusy(), true);
+    pipeline.start(); // ignored while busy
+    release();
+    assert.equal(await pending, 'AGAIN: first take');
+    assert.match(refinements.at(-1).systemPrompt, /### Concise output/);
+    assert.equal(pipeline.isIdle(), true);
+  });
+
+  it('inheritFrom carries refine-last history into a rebuilt pipeline', async () => {
+    const cfg = makeFakeConfig({ _baseDir: tempBase });
+    loadSkills(cfg.skillsDir);
+    const old = new Pipeline({
+      cfg,
+      provider: makeFakeProvider([]),
+      transcribeAudio: async () => ({ text: 'keep me', stderr: '', durationMs: 1 }),
+    });
+    await old.processPcm(samplePcm(), { inject: false });
+
+    const refinements = [];
+    const rebuilt = new Pipeline({ cfg, provider: makeFakeProvider(refinements) });
+    assert.equal(rebuilt.hasLastTranscription(), false);
+    rebuilt.inheritFrom(old);
+    assert.equal(rebuilt.hasLastTranscription(), true);
+    await rebuilt.refineLast();
+    assert.equal(refinements.at(-1).userPrompt, 'keep me');
+  });
+
+  it('VAD gate drops a quiet capture before whisper runs', async () => {
+    const cfg = makeFakeConfig({ _baseDir: tempBase, vadEnabled: true, vadThresholdDb: -40 });
+    let transcribed = false;
+    const pipeline = new Pipeline({
+      cfg,
+      provider: makeFakeProvider([]),
+      transcribeAudio: async () => {
+        transcribed = true;
+        return { text: 'you', stderr: '', durationMs: 1 };
+      },
+    });
+    const quiet = Buffer.alloc(32_000);
+    for (let i = 0; i < quiet.length; i += 2) quiet.writeInt16LE(i % 4 ? 30 : -30, i); // ~-60 dBFS
+    await assert.rejects(pipeline.processPcm(quiet, { inject: false }), { name: 'NoSpeechError' });
+    assert.equal(transcribed, false);
+
+    // samplePcm() is a constant 1000 (~-30 dBFS): passes the gate.
+    const result = await pipeline.processPcm(samplePcm(), { inject: false });
+    assert.equal(result.transcription, 'you');
+  });
+
+  it('click-to-record listens, flips to recording on speech, and auto-stops on silence', async () => {
+    const cfg = makeFakeConfig({ _baseDir: tempBase, vadEnabled: true });
+    const statuses = [];
+    const starts = [];
+    let stops = 0;
+    const pipeline = new Pipeline({
+      cfg,
+      provider: makeFakeProvider([]),
+      emitStatus: (s) => statuses.push(s),
+      requestRendererStart: (autoStop) => starts.push(autoStop),
+      requestRendererStop: () => {
+        stops++;
+      },
+      transcribeAudio: async () => ({ text: 'x', stderr: '', durationMs: 1 }),
+      inject: async () => {},
+    });
+
+    pipeline.toggle();
+    assert.deepEqual(starts, [true]);
+    assert.equal(statuses.at(-1), 'vad-listening');
+    pipeline.speechStarted();
+    assert.equal(statuses.at(-1), 'recording');
+
+    pipeline.vadSilence();
+    pipeline.toggle(); // user clicks at the same moment: must not stop twice
+    assert.equal(stops, 1);
+    await pipeline.handleAudioChunk(samplePcm());
+    assert.ok(statuses.includes('done'));
+  });
+
+  it('keeps a capture started during processing alive after processing finishes', async () => {
+    // Reproduces a real session log: the user clicked to keep talking while
+    // the previous dictation was refining; that one finished first.
+    const cfg = makeFakeConfig({ _baseDir: tempBase });
+    loadSkills(cfg.skillsDir);
+    const injections = [];
+    let releaseFirst;
+    let calls = 0;
+    const pipeline = new Pipeline({
+      cfg,
+      provider: makeFakeProvider([]),
+      requestRendererStart: () => {},
+      requestRendererStop: () => {},
+      transcribeAudio: async () => {
+        calls++;
+        if (calls === 1) await new Promise((r) => (releaseFirst = r));
+        return { text: `take ${calls}`, stderr: '', durationMs: 1 };
+      },
+      inject: async (t) => injections.push(t),
+    });
+
+    pipeline.toggle(); // first capture
+    pipeline.toggle(); // stop it
+    const first = pipeline.handleAudioChunk(samplePcm());
+    await new Promise((r) => setImmediate(r));
+    pipeline.toggle(); // second capture starts while the first is processing
+    releaseFirst();
+    await first;
+
+    // First finished; the second capture must now be the live recording.
+    assert.equal(pipeline.isRecording(), true);
+    pipeline.toggle(); // user stops the second capture
+    await pipeline.handleAudioChunk(samplePcm());
+    assert.deepEqual(injections, ['REFINED: take 1', 'REFINED: take 2']);
+    assert.equal(pipeline.isIdle(), true);
+  });
+
+  it('push-to-talk asks the renderer not to auto-stop', () => {
+    const starts = [];
+    const pipeline = new Pipeline({
+      cfg: makeFakeConfig({ _baseDir: tempBase }),
+      provider: makeFakeProvider([]),
+      requestRendererStart: (autoStop) => starts.push(autoStop),
+    });
+    pipeline.start();
+    assert.deepEqual(starts, [false]);
+  });
+
+  it('feeds captured context, routed skills and images to the provider; refine-last reuses it', async () => {
+    const cfg = makeFakeConfig({
+      _baseDir: tempBase,
+      enabledSkills: [],
+      appSkillRoutes: [{ match: 'code', enable: ['code-context'], disable: [] }],
+    });
+    loadSkills(cfg.skillsDir);
+    const requests = [];
+    const provider = makeFakeProvider([]);
+    provider.refineStream = async (req) => {
+      requests.push(req);
+      return { text: 'ok', durationMs: 1 };
+    };
+    let captures = 0;
+    const pipeline = new Pipeline({
+      cfg,
+      provider,
+      requestRendererStart: () => {},
+      transcribeAudio: async () => ({ text: 'fix it', stderr: '', durationMs: 1 }),
+      inject: async () => {},
+      captureContext: async () => {
+        captures++;
+        return {
+          window: { processName: 'Code', windowTitle: 'app.ts', os: 'Windows' },
+          block: '<!-- context: app=Code -->',
+          images: [{ base64: 'AAAA', mimeType: 'image/jpeg' }],
+        };
+      },
+    });
+
+    pipeline.start();
+    await pipeline.handleAudioChunk(samplePcm());
+    assert.equal(captures, 1);
+    assert.match(requests[0].systemPrompt, /### Code context/);
+    assert.match(requests[0].systemPrompt, /## Context[\s\S]*app=Code/);
+    assert.deepEqual(requests[0].images, [{ base64: 'AAAA', mimeType: 'image/jpeg' }]);
+
+    await pipeline.refineLast();
+    assert.equal(captures, 1, 'refine-last reuses the original context');
+    assert.match(requests[1].systemPrompt, /app=Code/);
+  });
+
+  it('a failing context capture does not break the dictation', async () => {
+    const cfg = makeFakeConfig({ _baseDir: tempBase });
+    loadSkills(cfg.skillsDir);
+    const injections = [];
+    const pipeline = new Pipeline({
+      cfg,
+      provider: makeFakeProvider([]),
+      requestRendererStart: () => {},
+      transcribeAudio: async () => ({ text: 'still works', stderr: '', durationMs: 1 }),
+      inject: async (t) => injections.push(t),
+      captureContext: async () => {
+        throw new Error('no accessibility permission');
+      },
+    });
+    pipeline.start();
+    await pipeline.handleAudioChunk(samplePcm());
+    assert.deepEqual(injections, ['REFINED: still works']);
   });
 
   it('processPcm() defaults inject to true and emits injecting status', async () => {

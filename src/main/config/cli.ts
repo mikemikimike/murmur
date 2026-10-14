@@ -103,6 +103,42 @@ export function parseCli(argv: readonly string[]): CliResult {
   }
   if (typeof raw['injection-method'] === 'string')
     candidate.injectionMethod = raw['injection-method'];
+  if (raw['progressive-injection'] === true || raw['progressive-injection'] === 'true') {
+    candidate.progressiveInjection = true;
+  } else if (raw['progressive-injection'] === 'false') {
+    candidate.progressiveInjection = false;
+  }
+  if (raw['vad'] === true || raw['vad'] === 'true') {
+    candidate.vadEnabled = true;
+  } else if (raw['vad'] === 'false') {
+    candidate.vadEnabled = false;
+  }
+  if (typeof raw['vad-threshold'] === 'string') {
+    const n = Number(raw['vad-threshold']);
+    if (Number.isFinite(n)) candidate.vadThresholdDb = n;
+  }
+  if (typeof raw['vad-silence'] === 'string') {
+    const n = Number(raw['vad-silence']);
+    if (Number.isFinite(n)) candidate.vadSilenceMs = n;
+  }
+  if (typeof raw['vad-lead-in'] === 'string') {
+    const n = Number(raw['vad-lead-in']);
+    if (Number.isFinite(n)) candidate.vadLeadInMs = n;
+  }
+  if (raw['context'] === true || raw['context'] === 'true') {
+    candidate.contextCapture = true;
+  } else if (raw['context'] === 'false') {
+    candidate.contextCapture = false;
+  }
+  if (typeof raw['clipboard-entries'] === 'string') {
+    const n = Number(raw['clipboard-entries']);
+    if (Number.isFinite(n)) candidate.clipboardContextEntries = n;
+  }
+  if (raw['screenshot'] === true || raw['screenshot'] === 'true') {
+    candidate.screenshotContext = true;
+  } else if (raw['screenshot'] === 'false') {
+    candidate.screenshotContext = false;
+  }
   if (typeof raw['logs-dir'] === 'string') candidate.logsDir = raw['logs-dir'];
   if (typeof raw['log-mode'] === 'string') candidate.logMode = raw['log-mode'];
   if (typeof raw['skills-dir'] === 'string') candidate.skillsDir = raw['skills-dir'];
@@ -175,8 +211,23 @@ Hotkeys (combo strings parsed from "Ctrl+Shift+Space" form):
   --toggle-hotkey <combo>             Show/hide overlay (default Ctrl+Shift+H)
   --injection-method <auto|clipboard|type>
                                       How generated prompts are inserted
+  --progressive-injection             Type tokens into the cursor as they stream (requires type/auto method)
   --clipboard-retention <keep-generated|restore-previous>
                                       Keep generated text on clipboard after paste, or restore old clipboard
+
+Voice Activity Detection (VAD):
+  --vad <true|false>                  Speech detection (default: true): click-to-record
+                                      auto-stops after a pause, leading silence is trimmed,
+                                      and captures without speech are dropped
+  --vad-threshold <db>                Speech threshold in dBFS (default: -40; try -50 for quiet mics)
+  --vad-silence <ms>                  Pause that ends a click-to-record capture (default: 1500)
+  --vad-lead-in <ms>                  Audio kept before the first speech (default: 300)
+
+Context capture (sent to your LLM provider):
+  --context                           Share the active app + window title
+  --clipboard-entries <n>             Share the last N clipboard entries (0-5, default: 0)
+  --screenshot                        Attach a screenshot (vision-capable models only)
+  (appSkillRoutes in config.json enables/disables skills per active app)
 
 Overlay window:
   --overlay-anchor <bottom-center|bottom-right|top-right|free>

@@ -71,6 +71,7 @@
       <button type="button" class="tab" data-tab="provider">Provider</button>
       <button type="button" class="tab" data-tab="whisper">Whisper</button>
       <button type="button" class="tab" data-tab="hotkeys">Hotkeys</button>
+      <button type="button" class="tab" data-tab="voice">Voice &amp; context</button>
       <button type="button" class="tab" data-tab="paths">Paths</button>
       <button type="button" class="tab" data-tab="model-guide">Model guide</button>
     </nav>
@@ -337,6 +338,10 @@
               <option value="type">Type directly, also copy generated prompt</option>
             </select>
           </label>
+          <label class="toggle">
+            <input id="cfg-progressiveInjection" type="checkbox" />
+            <span>Progressive injection — type the prompt at the cursor as it streams</span>
+          </label>
           <div class="pane-footer">
             <div class="spacer"></div>
             <button id="btn-save-hotkeys" type="submit" class="btn btn-primary">
@@ -347,6 +352,72 @@
         <p class="hint">
           Changes take effect immediately — no restart needed.
         </p>
+      </section>
+
+      <section class="pane" data-pane="voice">
+        <div class="pane-header">
+          <h2>Voice &amp; context</h2>
+          <p>
+            Speech detection for the overlay, and what extra context the LLM sees when it refines
+            your dictation.
+          </p>
+        </div>
+        <form id="voice-form">
+          <label class="toggle">
+            <input id="cfg-vadEnabled" type="checkbox" />
+            <span>Voice activity detection</span>
+          </label>
+          <p class="hint">
+            Click-to-record stops by itself after a pause. Leading silence is trimmed, and
+            captures with no speech are dropped instead of being transcribed. Push-to-talk always
+            records until you release the key.
+          </p>
+          <label>
+            <span>Speech threshold (dBFS) <small>lower = more sensitive; try -50 for a quiet mic</small></span>
+            <input id="cfg-vadThresholdDb" type="number" min="-90" max="-1" step="1" />
+          </label>
+          <label>
+            <span>Stop after silence (ms) <small>click-to-record only</small></span>
+            <input id="cfg-vadSilenceMs" type="number" min="100" max="10000" step="50" />
+          </label>
+          <label>
+            <span>Lead-in kept before speech (ms)</span>
+            <input id="cfg-vadLeadInMs" type="number" min="1" max="2000" step="50" />
+          </label>
+
+          <label class="toggle">
+            <input id="cfg-contextCapture" type="checkbox" />
+            <span>Share the active app and window title with the LLM</span>
+          </label>
+          <label>
+            <span>Recent clipboard entries to share <small>0 = off, max 5</small></span>
+            <input id="cfg-clipboardContextEntries" type="number" min="0" max="5" step="1" />
+          </label>
+          <label class="toggle">
+            <input id="cfg-screenshotContext" type="checkbox" />
+            <span>Attach a screenshot (vision-capable models only)</span>
+          </label>
+          <p class="safety-note">
+            Context is sent to your configured provider. With an online provider, window titles,
+            clipboard text and screenshots leave your machine.
+          </p>
+          <label>
+            <span>App skill routes <small>JSON — enable/disable skills per app</small></span>
+            <textarea
+              id="cfg-appSkillRoutes"
+              spellcheck="false"
+              rows="6"
+              placeholder='[{ "match": "code", "enable": ["code-context"], "disable": [] }]'
+            ></textarea>
+          </label>
+          <p class="hint">
+            <code>match</code> is a case-insensitive substring of the active app or window title.
+          </p>
+          <div class="pane-footer">
+            <div class="spacer"></div>
+            <button id="btn-save-voice" type="submit" class="btn btn-primary">Save</button>
+          </div>
+        </form>
       </section>
 
       <section class="pane" data-pane="paths">

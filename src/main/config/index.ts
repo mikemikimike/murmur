@@ -17,6 +17,7 @@ export { HELP_TEXT } from './cli.js';
 export { DEFAULT_CONFIG, DEFAULT_SYSTEM_PROMPT } from './defaults.js';
 export { updateConfigFile } from './file.js';
 export type {
+  AppSkillRoute,
   ClipboardRetention,
   InjectionMethod,
   LogMode,
@@ -84,6 +85,42 @@ function readEnv(): PartialConfig {
   ) {
     partial.injectionMethod = e.MURMUR_INJECTION_METHOD;
   }
+  if (e.MURMUR_PROGRESSIVE_INJECTION === 'true' || e.MURMUR_PROGRESSIVE_INJECTION === '1') {
+    partial.progressiveInjection = true;
+  } else if (e.MURMUR_PROGRESSIVE_INJECTION === 'false' || e.MURMUR_PROGRESSIVE_INJECTION === '0') {
+    partial.progressiveInjection = false;
+  }
+  if (e.MURMUR_VAD_ENABLED === 'true' || e.MURMUR_VAD_ENABLED === '1') {
+    partial.vadEnabled = true;
+  } else if (e.MURMUR_VAD_ENABLED === 'false' || e.MURMUR_VAD_ENABLED === '0') {
+    partial.vadEnabled = false;
+  }
+  if (e.MURMUR_VAD_THRESHOLD_DB) {
+    const n = Number(e.MURMUR_VAD_THRESHOLD_DB);
+    if (Number.isFinite(n) && n < 0) partial.vadThresholdDb = n;
+  }
+  if (e.MURMUR_VAD_SILENCE_MS) {
+    const n = Number(e.MURMUR_VAD_SILENCE_MS);
+    if (Number.isFinite(n) && n > 0) partial.vadSilenceMs = n;
+  }
+  if (e.MURMUR_VAD_LEAD_IN_MS) {
+    const n = Number(e.MURMUR_VAD_LEAD_IN_MS);
+    if (Number.isFinite(n) && n > 0) partial.vadLeadInMs = n;
+  }
+  if (e.MURMUR_CONTEXT_CAPTURE === 'true' || e.MURMUR_CONTEXT_CAPTURE === '1') {
+    partial.contextCapture = true;
+  } else if (e.MURMUR_CONTEXT_CAPTURE === 'false' || e.MURMUR_CONTEXT_CAPTURE === '0') {
+    partial.contextCapture = false;
+  }
+  if (e.MURMUR_CLIPBOARD_CONTEXT_ENTRIES) {
+    const n = Number(e.MURMUR_CLIPBOARD_CONTEXT_ENTRIES);
+    if (Number.isFinite(n) && n >= 0) partial.clipboardContextEntries = Math.min(n, 5);
+  }
+  if (e.MURMUR_SCREENSHOT_CONTEXT === 'true' || e.MURMUR_SCREENSHOT_CONTEXT === '1') {
+    partial.screenshotContext = true;
+  } else if (e.MURMUR_SCREENSHOT_CONTEXT === 'false' || e.MURMUR_SCREENSHOT_CONTEXT === '0') {
+    partial.screenshotContext = false;
+  }
   if (e.MURMUR_LOGS_DIR) partial.logsDir = e.MURMUR_LOGS_DIR;
   if (e.MURMUR_LOG_MODE === 'metadata-only' || e.MURMUR_LOG_MODE === 'full') {
     partial.logMode = e.MURMUR_LOG_MODE;
@@ -144,6 +181,7 @@ function mergeOverlay(sources: MergeSources): {
   offsetX: number;
   offsetY: number;
   position: OverlayPosition | null;
+  visible: boolean;
 } {
   const cli = sources.cli.overlay ?? {};
   const file = sources.file.overlay ?? {};
@@ -157,6 +195,7 @@ function mergeOverlay(sources: MergeSources): {
     offsetX: pickFirst(cli.offsetX, file.offsetX, env.offsetX) ?? DEFAULT_CONFIG.overlay.offsetX,
     offsetY: pickFirst(cli.offsetY, file.offsetY, env.offsetY) ?? DEFAULT_CONFIG.overlay.offsetY,
     position,
+    visible: pickFirst(cli.visible, file.visible, env.visible) ?? true,
   };
 }
 
@@ -180,6 +219,9 @@ function resolveLayeredPath(
   if (sources.cli[key]) return resolver(sources.cli[key] as string, cwdBase);
   if (sources.file[key]) return resolver(sources.file[key] as string, sources.fileDir);
   if (sources.env[key]) return resolver(sources.env[key] as string, cwdBase);
+  // Logs belong next to the config, not wherever the process happened to start
+  // (under `npx` that is the user's home folder).
+  if (key === 'logsDir') return resolver(fallback, sources.fileDir);
   return resolver(fallback, cwdBase);
 }
 
@@ -228,23 +270,27 @@ export function loadConfig(opts: LoadConfigOptions): LoadedConfig {
     // Write absolute paths into the first-time config so that future runs from
     // a different cwd still find whisper + logs + skills correctly.
     //
-    // On Windows we ship whisper under ./bin/whisper/ relative to the install
-    // root (populated by `setup:whisper`), so we resolve against cwd.
+    // On Windows the first-run installer (`setup-whisper.ps1 -InstallDir`)
+    // extracts whisper into <userData>/bin/whisper/. A dev checkout that ran
+    // `pnpm setup:whisper` has it under ./bin/whisper/ instead, so prefer that
+    // only when it actually exists. Never seed against a bare cwd: under `npx`
+    // that is the user's home folder.
     // On Linux/macOS whisper-cli is a plain PATH command — store just the name,
     // not an absolute path, so it keeps working after the binary is moved.
     // The model file is downloaded into the user data dir by `setup:whisper`.
-    const cwdBase = process.cwd();
     const userDataDir = path.dirname(configFilePath);
     const IS_WINDOWS = process.platform === 'win32';
+    const devWhisperCli = path.resolve(process.cwd(), DEFAULT_CONFIG.whisperCliPath);
+    const whisperBase = IS_WINDOWS && existsSync(devWhisperCli) ? process.cwd() : userDataDir;
     const seedDefaults: Record<string, unknown> = {
       ...DEFAULT_CONFIG,
       whisperCliPath: IS_WINDOWS
-        ? path.resolve(cwdBase, DEFAULT_CONFIG.whisperCliPath)
+        ? path.resolve(whisperBase, DEFAULT_CONFIG.whisperCliPath)
         : DEFAULT_CONFIG.whisperCliPath, // bare name, resolved via PATH at runtime
       whisperModelPath: IS_WINDOWS
-        ? path.resolve(cwdBase, DEFAULT_CONFIG.whisperModelPath)
+        ? path.resolve(whisperBase, DEFAULT_CONFIG.whisperModelPath)
         : path.join(userDataDir, 'models', 'ggml-base.en.bin'),
-      logsDir: path.resolve(cwdBase, DEFAULT_CONFIG.logsDir),
+      logsDir: path.resolve(userDataDir, 'logs'),
       skillsDir: path.resolve(userDataDir, 'skills'),
     };
     // Do not persist built-in LLM defaults into a fresh config. Leaving these
@@ -254,6 +300,7 @@ export function loadConfig(opts: LoadConfigOptions): LoadedConfig {
     delete seedDefaults.baseUrl;
     delete seedDefaults.model;
     delete seedDefaults.apiKey;
+    delete seedDefaults.progressiveInjection;
     written = writeDefaultConfigIfMissing(configFilePath, seedDefaults);
     if (written) fileLoad = readConfigFile(configFilePath);
   } else if (process.platform !== 'win32' && fileLoad.partial.whisperCliPath) {
@@ -283,6 +330,29 @@ export function loadConfig(opts: LoadConfigOptions): LoadedConfig {
         },
       };
     }
+  } else if (process.platform === 'win32') {
+    // Migration: configs seeded by <=0.6.x on Windows pointed whisper at
+    // <cwd>/bin/whisper (the user's home folder under `npx`), while the
+    // installer puts it in <userData>/bin/whisper. If the configured file is
+    // gone but the installer's copy exists, use that instead.
+    const userDataDir = path.dirname(configFilePath);
+    const installed = {
+      whisperCliPath: path.resolve(userDataDir, DEFAULT_CONFIG.whisperCliPath),
+      whisperModelPath: path.resolve(userDataDir, DEFAULT_CONFIG.whisperModelPath),
+    };
+    const partial = { ...fileLoad.partial };
+    for (const key of ['whisperCliPath', 'whisperModelPath'] as const) {
+      const configured = partial[key];
+      if (
+        configured &&
+        path.isAbsolute(configured) &&
+        !existsSync(configured) &&
+        existsSync(installed[key])
+      ) {
+        partial[key] = installed[key];
+      }
+    }
+    fileLoad = { ...fileLoad, partial };
   }
 
   const sources: MergeSources = {
@@ -333,12 +403,59 @@ export function loadConfig(opts: LoadConfigOptions): LoadedConfig {
       sources.file.injectionMethod,
       sources.env.injectionMethod,
     ) ?? DEFAULT_CONFIG.injectionMethod;
+  const progressiveInjection =
+    pickFirst(
+      sources.cli.progressiveInjection,
+      sources.file.progressiveInjection,
+      sources.env.progressiveInjection,
+    ) ?? DEFAULT_CONFIG.progressiveInjection;
   const queueMaxDepth =
     pickFirst(sources.cli.queueMaxDepth, sources.file.queueMaxDepth, sources.env.queueMaxDepth) ??
     DEFAULT_CONFIG.queueMaxDepth;
   const prewarm =
     pickFirst(sources.cli.prewarm, sources.file.prewarm, sources.env.prewarm) ??
     DEFAULT_CONFIG.prewarm;
+
+  const vadEnabled =
+    pickFirst(sources.cli.vadEnabled, sources.file.vadEnabled, sources.env.vadEnabled) ??
+    DEFAULT_CONFIG.vadEnabled;
+  const vadThresholdDb =
+    pickFirst(
+      sources.cli.vadThresholdDb,
+      sources.file.vadThresholdDb,
+      sources.env.vadThresholdDb,
+    ) ?? DEFAULT_CONFIG.vadThresholdDb;
+  const vadSilenceMs =
+    pickFirst(sources.cli.vadSilenceMs, sources.file.vadSilenceMs, sources.env.vadSilenceMs) ??
+    DEFAULT_CONFIG.vadSilenceMs;
+  const vadLeadInMs =
+    pickFirst(sources.cli.vadLeadInMs, sources.file.vadLeadInMs, sources.env.vadLeadInMs) ??
+    DEFAULT_CONFIG.vadLeadInMs;
+
+  const contextCapture =
+    pickFirst(
+      sources.cli.contextCapture,
+      sources.file.contextCapture,
+      sources.env.contextCapture,
+    ) ?? DEFAULT_CONFIG.contextCapture;
+  const clipboardContextEntries =
+    pickFirst(
+      sources.cli.clipboardContextEntries,
+      sources.file.clipboardContextEntries,
+      sources.env.clipboardContextEntries,
+    ) ?? DEFAULT_CONFIG.clipboardContextEntries;
+  const screenshotContext =
+    pickFirst(
+      sources.cli.screenshotContext,
+      sources.file.screenshotContext,
+      sources.env.screenshotContext,
+    ) ?? DEFAULT_CONFIG.screenshotContext;
+  const appSkillRoutes =
+    pickFirst(
+      sources.cli.appSkillRoutes,
+      sources.file.appSkillRoutes,
+      sources.env.appSkillRoutes,
+    ) ?? DEFAULT_CONFIG.appSkillRoutes;
 
   const overlay = mergeOverlay(sources);
 
@@ -385,12 +502,23 @@ export function loadConfig(opts: LoadConfigOptions): LoadedConfig {
     clipboardRestoreDelayMs,
     clipboardRetention,
     injectionMethod,
+    progressiveInjection:
+      injectionMethod === 'clipboard' && progressiveInjection ? false : progressiveInjection,
     queueMaxDepth,
     prewarm,
+    vadEnabled,
+    vadThresholdDb,
+    vadSilenceMs,
+    vadLeadInMs,
+    contextCapture,
+    clipboardContextEntries,
+    screenshotContext,
+    appSkillRoutes,
     overlayAnchor: overlay.anchor,
     overlayOffsetX: overlay.offsetX,
     overlayOffsetY: overlay.offsetY,
     overlayPosition: overlay.position,
+    overlayVisible: overlay.visible,
     systemPrompt,
     enabledSkills,
     controlPanelPort,
@@ -401,6 +529,12 @@ export function loadConfig(opts: LoadConfigOptions): LoadedConfig {
     skillsDir: resolveLayeredPath(sources, 'skillsDir', DEFAULT_CONFIG.skillsDir),
     configFilePath,
   };
+
+  if (resolved.injectionMethod === 'clipboard' && progressiveInjection) {
+    console.warn(
+      '[config] progressiveInjection is incompatible with injectionMethod "clipboard"; disabling progressive injection',
+    );
+  }
 
   return {
     resolved,
@@ -438,8 +572,17 @@ function computeValueSources(sources: MergeSources): ConfigValueSources {
     'clipboardRestoreDelayMs',
     'clipboardRetention',
     'injectionMethod',
+    'progressiveInjection',
     'queueMaxDepth',
     'prewarm',
+    'vadEnabled',
+    'vadThresholdDb',
+    'vadSilenceMs',
+    'vadLeadInMs',
+    'contextCapture',
+    'clipboardContextEntries',
+    'screenshotContext',
+    'appSkillRoutes',
     'logMode',
     'systemPrompt',
     'enabledSkills',
@@ -463,8 +606,6 @@ function computeValueSources(sources: MergeSources): ConfigValueSources {
  */
 function computeOverrides(sources: MergeSources): ConfigOverrides {
   const out: ConfigOverrides = {};
-  // List of editable scalar fields the panel exposes.  Order matters only for
-  // readability; the loop below is field-by-field and side-effect free.
   const fields: (keyof ResolvedConfig)[] = [
     'provider',
     'baseUrl',
@@ -479,8 +620,17 @@ function computeOverrides(sources: MergeSources): ConfigOverrides {
     'clipboardRestoreDelayMs',
     'clipboardRetention',
     'injectionMethod',
+    'progressiveInjection',
     'queueMaxDepth',
     'prewarm',
+    'vadEnabled',
+    'vadThresholdDb',
+    'vadSilenceMs',
+    'vadLeadInMs',
+    'contextCapture',
+    'clipboardContextEntries',
+    'screenshotContext',
+    'appSkillRoutes',
     'logMode',
     'systemPrompt',
     'enabledSkills',

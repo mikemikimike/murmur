@@ -17,10 +17,14 @@ class RecorderProcessor extends AudioWorkletProcessor {
   process(inputs: Float32Array[][]): boolean {
     const channel = inputs[0]?.[0];
     if (channel && channel.length > 0) {
-      // .slice(0) copies the buffer before this call returns and the engine reclaims it.
-      this.port.postMessage(channel.slice(0));
+      let sumSq = 0;
+      for (let i = 0; i < channel.length; i++) {
+        sumSq += channel[i] * channel[i];
+      }
+      const rms = Math.sqrt(sumSq / channel.length);
+      this.port.postMessage({ samples: channel.slice(0), rms });
     }
-    return true; // returning false removes the processor
+    return true;
   }
 }
 

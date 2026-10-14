@@ -5,7 +5,7 @@ import type {
   RefineResponse,
   StreamRefineOptions,
 } from './types.js';
-import { stripThink } from './types.js';
+import { createThinkFilter, stripThink } from './types.js';
 
 interface OllamaTagsResponse {
   models: { name: string; model?: string }[];
@@ -14,18 +14,20 @@ interface OllamaTagsResponse {
 interface OllamaGenerateResponse {
   response: string;
   done: boolean;
+  error?: string;
 }
 
 export class OllamaProvider implements LlmProvider {
   constructor(public readonly config: ProviderConfig) {}
 
-  async refine({ systemPrompt, userPrompt }: RefineRequest): Promise<RefineResponse> {
+  async refine({ systemPrompt, userPrompt, images }: RefineRequest): Promise<RefineResponse> {
     const started = Date.now();
 
     const body = {
       model: this.config.model,
       system: systemPrompt,
       prompt: userPrompt,
+      ...(images?.length ? { images: images.map((img) => img.base64) } : {}),
       stream: false,
       think: false,
       options: {
@@ -50,7 +52,7 @@ export class OllamaProvider implements LlmProvider {
   }
 
   async refineStream(
-    { systemPrompt, userPrompt }: RefineRequest,
+    { systemPrompt, userPrompt, images }: RefineRequest,
     { onToken }: StreamRefineOptions,
   ): Promise<RefineResponse> {
     const started = Date.now();
@@ -59,6 +61,7 @@ export class OllamaProvider implements LlmProvider {
       model: this.config.model,
       system: systemPrompt,
       prompt: userPrompt,
+      ...(images?.length ? { images: images.map((img) => img.base64) } : {}),
       stream: true,
       think: false,
       options: {
@@ -83,9 +86,23 @@ export class OllamaProvider implements LlmProvider {
     }
 
     let fullText = '';
+    const visible = createThinkFilter(onToken);
     const reader = res.body.getReader();
     const decoder = new TextDecoder();
     let buffer = '';
+
+    const handleLine = (line: string) => {
+      const trimmed = line.trim();
+      if (!trimmed) return;
+      const chunk = JSON.parse(trimmed) as OllamaGenerateResponse;
+      // Ollama reports failures mid-stream (e.g. model OOM) as {"error": "..."}
+      // with HTTP 200; without this they surfaced as "empty refinement".
+      if (chunk.error) throw new Error(`Ollama: ${chunk.error}`);
+      if (chunk.response) {
+        fullText += chunk.response;
+        visible.push(chunk.response);
+      }
+    };
 
     try {
       while (true) {
@@ -95,20 +112,13 @@ export class OllamaProvider implements LlmProvider {
 
         const lines = buffer.split('\n');
         buffer = lines.pop() ?? '';
-
-        for (const line of lines) {
-          const trimmed = line.trim();
-          if (!trimmed) continue;
-          const chunk = JSON.parse(trimmed) as OllamaGenerateResponse;
-          if (chunk.response) {
-            fullText += chunk.response;
-            onToken(chunk.response);
-          }
-        }
+        for (const line of lines) handleLine(line);
       }
+      handleLine(buffer + decoder.decode());
     } finally {
       reader.releaseLock();
     }
+    visible.flush();
 
     return { text: stripThink(fullText), durationMs: Date.now() - started };
   }

@@ -1,5 +1,15 @@
 import { spawnSync } from 'node:child_process';
-import { chmodSync, copyFileSync, createWriteStream, existsSync, mkdirSync } from 'node:fs';
+import { once } from 'node:events';
+import {
+  chmodSync,
+  copyFileSync,
+  createWriteStream,
+  existsSync,
+  mkdirSync,
+  renameSync,
+  rmSync,
+} from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import process from 'node:process';
 import { fileURLToPath } from 'node:url';
@@ -46,40 +56,66 @@ async function askYesNo(message: string, initial = true): Promise<boolean> {
   return Boolean(ok);
 }
 
-/** Stream-download a file with a compact progress line. */
-async function downloadWithProgress(url: string, destPath: string, label: string): Promise<void> {
+/**
+ * Stream-download a file with a compact progress line.
+ *
+ * Writes to `<dest>.part` and renames on success, so an interrupted or
+ * truncated download never leaves a file that later passes the
+ * "model already installed" existence check.
+ */
+export async function downloadWithProgress(
+  url: string,
+  destPath: string,
+  label: string,
+): Promise<void> {
   mkdirSync(path.dirname(destPath), { recursive: true });
   const res = await fetch(url, { redirect: 'follow' });
   if (!res.ok || !res.body) {
     throw new Error(`download failed: HTTP ${res.status} ${res.statusText}`);
   }
-  const totalHeader = res.headers.get('content-length');
+  // content-length counts encoded bytes; fetch hands us decoded ones.
+  const totalHeader = res.headers.get('content-encoding')
+    ? null
+    : res.headers.get('content-length');
   const total = totalHeader ? Number.parseInt(totalHeader, 10) : 0;
-  const stream = createWriteStream(destPath);
+  const partPath = `${destPath}.part`;
+  const stream = createWriteStream(partPath);
+  const writeError = new Promise<never>((_, reject) => stream.once('error', reject));
+  writeError.catch(() => {}); // surfaced via Promise.race below
   const reader = res.body.getReader();
   let received = 0;
   let lastPrint = 0;
-  while (true) {
-    const { value, done } = await reader.read();
-    if (done) break;
-    received += value.byteLength;
-    stream.write(value);
-    // Throttle progress output to ~10 Hz
-    const now = Date.now();
-    if (now - lastPrint > 100) {
-      const mb = received / 1024 / 1024;
-      const pct = total ? ((received / total) * 100).toFixed(1) : '?';
-      process.stdout.write(
-        `\r    ${pc.dim(label)}  ${mb.toFixed(1)} MB${total ? ` / ${(total / 1024 / 1024).toFixed(1)} MB (${pct}%)` : ''}`,
-      );
-      lastPrint = now;
+  try {
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      received += value.byteLength;
+      if (!stream.write(value)) {
+        await Promise.race([once(stream, 'drain'), writeError]);
+      }
+      // Throttle progress output to ~10 Hz
+      const now = Date.now();
+      if (now - lastPrint > 100) {
+        const mb = received / 1024 / 1024;
+        const pct = total ? ((received / total) * 100).toFixed(1) : '?';
+        process.stdout.write(
+          `\r    ${pc.dim(label)}  ${mb.toFixed(1)} MB${total ? ` / ${(total / 1024 / 1024).toFixed(1)} MB (${pct}%)` : ''}`,
+        );
+        lastPrint = now;
+      }
     }
+    stream.end();
+    await Promise.race([once(stream, 'finish'), writeError]);
+    if (total && received !== total) {
+      throw new Error(`incomplete download: got ${received} of ${total} bytes`);
+    }
+    renameSync(partPath, destPath);
+  } catch (err) {
+    stream.destroy();
+    rmSync(partPath, { force: true });
+    if (lastPrint) process.stdout.write('\n');
+    throw err;
   }
-  stream.end();
-  await new Promise<void>((resolve, reject) => {
-    stream.on('finish', () => resolve());
-    stream.on('error', reject);
-  });
   process.stdout.write(
     `\r    ${pc.green('✓')} ${label}  ${(received / 1024 / 1024).toFixed(1)} MB                    \n`,
   );
@@ -169,8 +205,11 @@ async function installWhisperUnix(ctx: SetupContext): Promise<WhisperInstallResu
 
   // 3. Configure + build
   console.log(pc.dim('    [2/3] cmake configure + build (this is the slow part)...'));
-  const nproc = process.env.NPROC || (process.platform === 'darwin' ? '4' : '');
-  const configure = spawnSync('cmake', ['-B', 'build'], { cwd: buildRoot, stdio: 'inherit' });
+  const nproc = process.env.NPROC || String(os.availableParallelism());
+  const configure = spawnSync('cmake', ['-B', 'build', '-DCMAKE_BUILD_TYPE=Release'], {
+    cwd: buildRoot,
+    stdio: 'inherit',
+  });
   if (configure.status !== 0) {
     console.error(pc.red('    x cmake configure failed'));
     return null;
@@ -232,6 +271,11 @@ async function installWhisperWindows(ctx: SetupContext): Promise<WhisperInstallR
   );
   if (res.status !== 0) {
     console.error(pc.red('    x setup-whisper.ps1 exited with an error'));
+    console.log(
+      pc.dim(
+        `    Manual install: extract whisper-bin-x64.zip from https://github.com/ggml-org/whisper.cpp/releases into ${path.join(ctx.userDataDir, 'bin', 'whisper')}`,
+      ),
+    );
     return null;
   }
   const binaryPath = path.join(ctx.userDataDir, 'bin', 'whisper', 'whisper-cli.exe');

@@ -5,7 +5,7 @@ import type {
   RefineResponse,
   StreamRefineOptions,
 } from './types.js';
-import { parseSseStream, stripThink } from './types.js';
+import { createThinkFilter, parseSseStream, stripThink } from './types.js';
 
 interface OpenAiModelsResponse {
   data: { id: string }[];
@@ -23,10 +23,12 @@ interface OpenAiChatResponse {
 }
 
 interface OpenAiStreamDelta {
-  choices: Array<{
+  choices?: Array<{
     delta: { content?: string };
     finish_reason?: string | null;
   }>;
+  /** llama.cpp / vLLM / LM Studio report mid-stream failures this way. */
+  error?: { message?: string };
 }
 
 /**
@@ -48,17 +50,30 @@ export class OpenAiCompatProvider implements LlmProvider {
     return h;
   }
 
-  async refine({ systemPrompt, userPrompt }: RefineRequest): Promise<RefineResponse> {
+  private messages({ systemPrompt, userPrompt, images }: RefineRequest): unknown[] {
+    const user = images?.length
+      ? [
+          { type: 'text', text: userPrompt },
+          ...images.map((img) => ({
+            type: 'image_url',
+            image_url: { url: `data:${img.mimeType};base64,${img.base64}` },
+          })),
+        ]
+      : userPrompt;
+    return [
+      { role: 'system', content: systemPrompt },
+      { role: 'user', content: user },
+    ];
+  }
+
+  async refine(req: RefineRequest): Promise<RefineResponse> {
     const started = Date.now();
 
     const body = {
       model: this.config.model,
       stream: false,
       temperature: this.config.temperature,
-      messages: [
-        { role: 'system', content: systemPrompt },
-        { role: 'user', content: userPrompt },
-      ],
+      messages: this.messages(req),
     };
 
     const res = await fetch(`${this.config.baseUrl}/chat/completions`, {
@@ -79,7 +94,7 @@ export class OpenAiCompatProvider implements LlmProvider {
   }
 
   async refineStream(
-    { systemPrompt, userPrompt }: RefineRequest,
+    req: RefineRequest,
     { onToken }: StreamRefineOptions,
   ): Promise<RefineResponse> {
     const started = Date.now();
@@ -88,10 +103,7 @@ export class OpenAiCompatProvider implements LlmProvider {
       model: this.config.model,
       stream: true,
       temperature: this.config.temperature,
-      messages: [
-        { role: 'system', content: systemPrompt },
-        { role: 'user', content: userPrompt },
-      ],
+      messages: this.messages(req),
     };
 
     const res = await fetch(`${this.config.baseUrl}/chat/completions`, {
@@ -111,20 +123,28 @@ export class OpenAiCompatProvider implements LlmProvider {
     }
 
     let fullText = '';
+    const visible = createThinkFilter(onToken);
 
     await parseSseStream(res.body, (_eventType, data) => {
       if (data === '[DONE]') return;
+      let parsed: OpenAiStreamDelta;
       try {
-        const parsed = JSON.parse(data) as OpenAiStreamDelta;
-        const content = parsed.choices[0]?.delta?.content;
-        if (content) {
-          fullText += content;
-          onToken(content);
-        }
+        parsed = JSON.parse(data) as OpenAiStreamDelta;
       } catch {
-        /* skip malformed SSE data lines */
+        return; /* skip malformed SSE data lines */
+      }
+      if (parsed.error) {
+        throw new Error(
+          `${this.config.displayName} stream error: ${parsed.error.message ?? JSON.stringify(parsed.error)}`,
+        );
+      }
+      const content = parsed.choices?.[0]?.delta?.content;
+      if (content) {
+        fullText += content;
+        visible.push(content);
       }
     });
+    visible.flush();
 
     return { text: stripThink(fullText), durationMs: Date.now() - started };
   }

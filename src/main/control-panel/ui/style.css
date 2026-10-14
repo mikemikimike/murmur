@@ -650,6 +650,10 @@ code {
   gap: 16px;
 }
 
+#cfg-appSkillRoutes {
+  min-height: 120px;
+}
+
 #skill-form textarea {
   min-height: 240px;
   flex: 1;

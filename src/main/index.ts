@@ -16,6 +16,10 @@ import {
   IPC_SET_MOUSE_INTERACTIVE,
   IPC_SHOW_CONTEXT_MENU,
   IPC_TOGGLE_RECORDING,
+  IPC_VAD_CONFIG,
+  IPC_VAD_SILENCE_TIMEOUT,
+  IPC_VAD_SPEECH_START,
+  type VadConfigPayload,
 } from '../shared/ipc.js';
 import { CommandAudioRecorder } from './audio/recorder.js';
 import { printReadyBanner } from './cli/status.js';
@@ -27,9 +31,18 @@ import {
   printResolvedConfig,
   updateConfigFile,
 } from './config/index.js';
+import {
+  getClipboardHistory,
+  ignoreClipboardText,
+  startClipboardMonitoring,
+  stopClipboardMonitoring,
+} from './context/clipboard.js';
+import { type CapturedContext, captureContext, contextWanted } from './context/index.js';
+import { captureScreenshot } from './context/screenshot.js';
+import { captureActiveWindow } from './context/window.js';
 import { type ServerHandle, startControlPanelServer } from './control-panel/server.js';
 import { HotkeyService } from './hotkey.js';
-import { pasteAtCursor } from './inject.js';
+import { createTypedProgressiveInjector, type InjectOptions, pasteAtCursor } from './inject.js';
 import { type McpServerHandle, startMcpServer } from './mcp/server.js';
 import {
   createOverlayWindow,
@@ -39,6 +52,7 @@ import {
   toggleOverlayVisibility,
 } from './overlay/window.js';
 import { Pipeline } from './pipeline.js';
+import { isPathInside } from './platform.js';
 import { runPreflight } from './preflight.js';
 import {
   findMurmurUrlInArgv,
@@ -48,6 +62,7 @@ import {
 } from './protocol/index.js';
 import { createProvider, type LlmProvider, PROVIDER_PRESETS } from './providers/index.js';
 import { type TrayIconState, TrayService } from './tray.js';
+import { probeWhisperStreaming } from './whisper-probe.js';
 import { beginWindowDrag, endWindowDrag } from './window-drag.js';
 
 let mainWindow: BrowserWindow | null = null;
@@ -56,10 +71,12 @@ let pipeline: Pipeline | null = null;
 let provider: LlmProvider | null = null;
 let controlPanel: ServerHandle | null = null;
 let mcpServer: McpServerHandle | null = null;
+let whisperStreaming = true;
 const hotkey = new HotkeyService();
 const tray = new TrayService();
 
 const POSITION_SAVE_DEBOUNCE_MS = 350;
+const PIPELINE_REBUILD_RETRY_MS = 250;
 
 function openControlPanelExternal(): void {
   const url = controlPanel?.url ?? 'http://localhost:7331';
@@ -111,6 +128,7 @@ function buildInfo(l: LoadedConfig, controlPanelUrl: string): InfoPayload {
     toggleHotkeyCombo: r.toggleHotkeyCombo,
     configFilePath: r.configFilePath,
     controlPanelUrl,
+    progressiveInjection: r.progressiveInjection,
   };
 }
 
@@ -120,6 +138,46 @@ function pushInfoToRenderer(): void {
     IPC_INFO,
     buildInfo(loaded, controlPanel?.url ?? 'http://localhost:7331'),
   );
+  const r = loaded.resolved;
+  mainWindow.webContents.send(IPC_VAD_CONFIG, {
+    enabled: r.vadEnabled,
+    thresholdDb: r.vadThresholdDb,
+    silenceMs: r.vadSilenceMs,
+    leadInMs: r.vadLeadInMs,
+  } satisfies VadConfigPayload);
+}
+
+/** Clipboard history is only polled when the user opted into sharing it. */
+function syncClipboardMonitoring(): void {
+  if ((loaded?.resolved.clipboardContextEntries ?? 0) > 0) startClipboardMonitoring();
+  else stopClipboardMonitoring();
+}
+
+async function captureContextNow(): Promise<CapturedContext | null> {
+  if (!loaded || !contextWanted(loaded.resolved)) return null;
+  return captureContext(loaded.resolved, {
+    activeWindow: captureActiveWindow,
+    clipboard: getClipboardHistory,
+    screenshot: captureScreenshot,
+  });
+}
+
+async function injectText(text: string, opts: InjectOptions): Promise<void> {
+  // Our own paste must not show up as "clipboard context" next time.
+  ignoreClipboardText(text);
+  await pasteAtCursor(text, opts);
+}
+
+function persistOverlayVisibility(visible: boolean): void {
+  if (!loaded) return;
+  loaded.resolved.overlayVisible = visible;
+  updateConfigFile(loaded.resolved.configFilePath, (raw) => {
+    const overlay = (
+      raw.overlay && typeof raw.overlay === 'object' ? (raw.overlay as Record<string, unknown>) : {}
+    ) as Record<string, unknown>;
+    overlay.visible = visible;
+    raw.overlay = overlay;
+  });
 }
 
 function persistOverlayPosition(x: number, y: number): void {
@@ -192,6 +250,7 @@ function showContextMenu(): void {
       accelerator: r.toggleHotkeyCombo,
       click: () => {
         if (mainWindow) hideOverlay(mainWindow);
+        persistOverlayVisibility(false);
       },
     },
     {
@@ -236,6 +295,14 @@ function wireIPC(): void {
     pipeline?.toggle();
   });
 
+  ipcMain.on(IPC_VAD_SPEECH_START, () => {
+    pipeline?.speechStarted();
+  });
+
+  ipcMain.on(IPC_VAD_SILENCE_TIMEOUT, () => {
+    pipeline?.vadSilence();
+  });
+
   ipcMain.on(IPC_REQUEST_INFO, () => {
     pushInfoToRenderer();
   });
@@ -251,6 +318,7 @@ function wireIPC(): void {
 
   ipcMain.on(IPC_HIDE_OVERLAY, () => {
     if (mainWindow) hideOverlay(mainWindow);
+    persistOverlayVisibility(false);
   });
 
   ipcMain.on(IPC_SHOW_CONTEXT_MENU, () => {
@@ -286,7 +354,13 @@ function wireIPC(): void {
     });
   });
 
-  ipcMain.on(IPC_OPEN_LOG_DIR, (_evt, dir: string) => {
+  ipcMain.on(IPC_OPEN_LOG_DIR, (_evt, dir: unknown) => {
+    // shell.openPath launches whatever it is given (including executables), so
+    // only honour session folders inside the configured logs dir.
+    if (!loaded || typeof dir !== 'string' || !isPathInside(dir, loaded.resolved.logsDir)) {
+      console.warn('[main] refused to open path outside the logs dir:', dir);
+      return;
+    }
     shell.openPath(dir).catch((err) => {
       console.error('[main] openPath failed:', err);
     });
@@ -308,6 +382,7 @@ function wireHotkey(): void {
   hotkey.on('toggle', () => {
     if (!mainWindow) return;
     const visible = toggleOverlayVisibility(mainWindow);
+    persistOverlayVisibility(visible);
     console.log(`[murmur] overlay ${visible ? 'shown' : 'hidden'} via toggle hotkey`);
   });
   hotkey.start();
@@ -330,7 +405,8 @@ function createMainPipeline(): Pipeline {
     getWindow: () => mainWindow,
     onStatus: (s) => {
       let iconState: TrayIconState = 'idle';
-      if (s === 'recording') iconState = 'recording';
+      if (s === 'recording' || s === 'vad-listening') iconState = 'recording';
+      else if (s === 'error') iconState = 'error';
       else if (
         s === 'transcribing' ||
         s === 'transcribing-streaming' ||
@@ -342,9 +418,36 @@ function createMainPipeline(): Pipeline {
       }
       tray.setState(iconState);
     },
-    inject: pasteAtCursor,
+    inject: injectText,
     createRecorder: () => new CommandAudioRecorder({ commandLine: cfg.recorderCommand }),
+    createProgressiveInjector: createTypedProgressiveInjector,
+    whisperSupportsStreaming: whisperStreaming,
+    captureContext: captureContextNow,
   });
+}
+
+let pipelineRebuildTimer: NodeJS.Timeout | null = null;
+
+/**
+ * Swap in a pipeline built from the current config. While a capture or
+ * refinement is in flight the old pipeline must finish, so retry until idle —
+ * otherwise a panel edit made mid-dictation would never reach the pipeline.
+ */
+function rebuildPipelineWhenIdle(): void {
+  if (!pipeline) return;
+  if (pipeline.isBusy()) {
+    if (!pipelineRebuildTimer) {
+      console.warn('[murmur] config reload deferred: pipeline is busy (recording or processing)');
+      pipelineRebuildTimer = setTimeout(() => {
+        pipelineRebuildTimer = null;
+        rebuildPipelineWhenIdle();
+      }, PIPELINE_REBUILD_RETRY_MS);
+    }
+    return;
+  }
+  const previous = pipeline;
+  pipeline = createMainPipeline();
+  pipeline.inheritFrom(previous);
 }
 
 function reloadConfigAfterExternalUpdate(): void {
@@ -353,14 +456,9 @@ function reloadConfigAfterExternalUpdate(): void {
   loaded.resolved = fresh.resolved;
   loaded.overrides = fresh.overrides;
   provider = createProvider(getProviderConfig(loaded.resolved));
-  if (pipeline) {
-    if (pipeline.isBusy()) {
-      console.warn('[murmur] config reload deferred: pipeline is busy (recording or processing)');
-    } else {
-      pipeline = createMainPipeline();
-    }
-  }
+  rebuildPipelineWhenIdle();
   rebindHotkeys();
+  syncClipboardMonitoring();
   pushInfoToRenderer();
   console.log(
     `[murmur] config reloaded from control panel: ` +
@@ -485,14 +583,20 @@ async function bootstrap(): Promise<void> {
       .catch((err) => console.warn('[murmur] prewarm failed (non-fatal):', err));
   }
 
+  const whisperProbe = await probeWhisperStreaming(loaded.resolved.whisperCliPath);
+  whisperStreaming = whisperProbe.supportsStreaming;
+  console.log(`[murmur] whisper streaming: ${whisperStreaming ? 'supported' : 'not supported'}`);
+
   mainWindow = createOverlayWindow(loaded.resolved);
   tray.create({
     onShow: () => {
       if (mainWindow) showOverlay(mainWindow);
+      persistOverlayVisibility(true);
       tray.setVisibility(true);
     },
     onHide: () => {
       if (mainWindow) hideOverlay(mainWindow);
+      persistOverlayVisibility(false);
       tray.setVisibility(false);
     },
     onPanel: openControlPanelExternal,
@@ -504,7 +608,9 @@ async function bootstrap(): Promise<void> {
   setupPositionPersistence(mainWindow);
 
   mainWindow.once('ready-to-show', () => {
-    mainWindow?.showInactive();
+    if (loaded?.resolved.overlayVisible !== false) {
+      mainWindow?.showInactive();
+    }
     pushInfoToRenderer();
   });
 
@@ -514,6 +620,7 @@ async function bootstrap(): Promise<void> {
 
   wireIPC();
   wireHotkey();
+  syncClipboardMonitoring();
   wireScreenChanges();
   wireProtocolEvents(protocolDeps);
   await startPanel();
@@ -540,6 +647,7 @@ if (app.hasSingleInstanceLock()) {
 }
 
 app.on('before-quit', () => {
+  stopClipboardMonitoring();
   hotkey.shutdown();
   tray.destroy();
   controlPanel?.stop().catch(() => undefined);

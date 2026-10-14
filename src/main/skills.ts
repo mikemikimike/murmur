@@ -139,19 +139,27 @@ export interface SaveSkillInput {
   content: string;
 }
 
+/**
+ * Frontmatter values are single-line. A newline in a name/description would
+ * otherwise inject extra keys (e.g. a second `id:`) into the saved file.
+ */
+function oneLine(value: string): string {
+  return value.replace(/\s*[\r\n]+\s*/g, ' ').trim();
+}
+
 export function saveSkill(dir: string, input: SaveSkillInput): Skill {
   ensureDir(dir);
-  const id = input.id?.trim() || slugify(input.name);
+  const name = oneLine(input.name);
+  const description = oneLine(input.description ?? '');
+  const id = input.id?.trim() || slugify(name);
   const filePath = skillPath(dir, id);
-  const meta = [`id: ${id}`, `name: ${input.name}`, `description: ${input.description ?? ''}`].join(
-    '\n',
-  );
+  const meta = [`id: ${id}`, `name: ${name}`, `description: ${description}`].join('\n');
   const file = `---\n${meta}\n---\n\n${input.content.trim()}\n`;
   writeFileSync(filePath, file, 'utf8');
   return {
     id,
-    name: input.name,
-    description: input.description ?? '',
+    name,
+    description,
     content: input.content.trim(),
     filePath,
   };

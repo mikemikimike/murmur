@@ -11,6 +11,7 @@ tmp-pack/
 .DS_Store
 Thumbs.db
 .vscode/
+.claude/
 roadmap/
 docs/superpowers/
 docs/FEATURE_BLUEPRINT.md

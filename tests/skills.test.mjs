@@ -31,6 +31,19 @@ describe('skills', () => {
     }
   });
 
+  it('keeps multi-line names from injecting frontmatter keys', () => {
+    saveSkill(dir, {
+      id: 'safe',
+      name: 'Nice name\nid: hijacked',
+      description: 'line one\r\nline two',
+      content: 'body',
+    });
+    const skill = loadSkills(dir).find((s) => s.filePath.endsWith('safe.md'));
+    assert.equal(skill.id, 'safe');
+    assert.equal(skill.name, 'Nice name id: hijacked');
+    assert.equal(skill.description, 'line one line two');
+  });
+
   it('save → load round-trips a new skill with auto-slugged id', () => {
     loadSkills(dir); // seed
     const saved = saveSkill(dir, {

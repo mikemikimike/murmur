@@ -5,7 +5,7 @@ import type {
   RefineResponse,
   StreamRefineOptions,
 } from './types.js';
-import { parseSseStream, stripThink } from './types.js';
+import { createThinkFilter, parseSseStream, stripThink } from './types.js';
 
 interface AnthropicContentBlock {
   type: 'text' | string;
@@ -31,6 +31,7 @@ interface AnthropicStreamEvent {
   type: string;
   delta?: { type: string; text?: string };
   index?: number;
+  error?: { type?: string; message?: string };
 }
 
 /**
@@ -57,15 +58,28 @@ export class AnthropicProvider implements LlmProvider {
     };
   }
 
-  async refine({ systemPrompt, userPrompt }: RefineRequest): Promise<RefineResponse> {
+  private messages({ userPrompt, images }: RefineRequest): unknown[] {
+    const content = images?.length
+      ? [
+          ...images.map((img) => ({
+            type: 'image',
+            source: { type: 'base64', media_type: img.mimeType, data: img.base64 },
+          })),
+          { type: 'text', text: userPrompt },
+        ]
+      : userPrompt;
+    return [{ role: 'user', content }];
+  }
+
+  async refine(req: RefineRequest): Promise<RefineResponse> {
     const started = Date.now();
 
     const body = {
       model: this.config.model,
       max_tokens: 1024,
       temperature: this.config.temperature,
-      system: systemPrompt,
-      messages: [{ role: 'user', content: userPrompt }],
+      system: req.systemPrompt,
+      messages: this.messages(req),
     };
 
     const res = await fetch(`${this.config.baseUrl}/messages`, {
@@ -86,7 +100,7 @@ export class AnthropicProvider implements LlmProvider {
   }
 
   async refineStream(
-    { systemPrompt, userPrompt }: RefineRequest,
+    req: RefineRequest,
     { onToken }: StreamRefineOptions,
   ): Promise<RefineResponse> {
     const started = Date.now();
@@ -95,9 +109,9 @@ export class AnthropicProvider implements LlmProvider {
       model: this.config.model,
       max_tokens: 1024,
       temperature: this.config.temperature,
-      system: systemPrompt,
+      system: req.systemPrompt,
       stream: true,
-      messages: [{ role: 'user', content: userPrompt }],
+      messages: this.messages(req),
     };
 
     const res = await fetch(`${this.config.baseUrl}/messages`, {
@@ -117,18 +131,28 @@ export class AnthropicProvider implements LlmProvider {
     }
 
     let fullText = '';
+    const visible = createThinkFilter(onToken);
 
     await parseSseStream(res.body, (_eventType, data) => {
+      let event: AnthropicStreamEvent;
       try {
-        const event = JSON.parse(data) as AnthropicStreamEvent;
-        if (event.type === 'content_block_delta' && event.delta?.text) {
-          fullText += event.delta.text;
-          onToken(event.delta.text);
-        }
+        event = JSON.parse(data) as AnthropicStreamEvent;
       } catch {
-        /* skip malformed SSE data lines */
+        return; /* skip malformed SSE data lines */
+      }
+      // e.g. overloaded_error mid-stream; surface it instead of reporting an
+      // "empty refinement".
+      if (event.type === 'error') {
+        throw new Error(
+          `Anthropic stream error: ${event.error?.type ?? 'error'}: ${event.error?.message ?? ''}`,
+        );
+      }
+      if (event.type === 'content_block_delta' && event.delta?.text) {
+        fullText += event.delta.text;
+        visible.push(event.delta.text);
       }
     });
+    visible.flush();
 
     return { text: stripThink(fullText), durationMs: Date.now() - started };
   }
@@ -159,7 +183,9 @@ export class AnthropicProvider implements LlmProvider {
 
     let models: AnthropicModelsResponse;
     try {
-      const res = await fetch(`${this.config.baseUrl}/models`, {
+      // The list is paginated (20 per page by default); without a high limit a
+      // perfectly valid model can be reported as "not found" and block launch.
+      const res = await fetch(`${this.config.baseUrl}/models?limit=1000`, {
         headers: this.headers(),
         signal: AbortSignal.timeout(5_000),
       });

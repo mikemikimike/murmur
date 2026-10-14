@@ -1,19 +1,17 @@
-import { readFrequencies } from './recorder.js';
+import { readFrequencies, readRms } from './recorder.js';
 
 const BAR_COUNT = 18;
-/**
- * Range of frequency bins to visualise. With fftSize=256 and sampleRate=16000,
- * each bin spans 16000/256 = 62.5 Hz. Bins 1..50 cover ~62 Hz to 3.1 kHz, the
- * meat of human speech.
- */
 const BIN_START = 1;
 const BIN_END = 50;
 const MIN_HEIGHT = 0.08;
 const DECAY = 0.85;
+const IDLE_AMPLITUDE = 0.12;
+const IDLE_PERIOD_MS = 3000;
 
 export interface SoundbarController {
   start(): void;
   stop(): void;
+  idle(): void;
 }
 
 export function createSoundbar(container: HTMLElement): SoundbarController {
@@ -30,12 +28,21 @@ export function createSoundbar(container: HTMLElement): SoundbarController {
   }
 
   let raf: number | null = null;
-  let running = false;
+  let mode: 'off' | 'recording' | 'idle' = 'off';
+  let idleStart = 0;
 
-  function frame(): void {
-    if (!running) return;
+  function recordingFrame(): void {
+    const rms = readRms();
     const freq = readFrequencies();
-    if (freq) {
+    if (rms !== null) {
+      const rmsHeight = Math.max(MIN_HEIGHT, Math.min(1, rms * 4));
+      for (let i = 0; i < BAR_COUNT; i++) {
+        const variation = 0.7 + 0.6 * Math.sin((i / BAR_COUNT) * Math.PI);
+        const target = rmsHeight * variation;
+        heights[i] = Math.max(target, (heights[i] ?? MIN_HEIGHT) * DECAY);
+        bars[i]?.style.setProperty('transform', `scaleY(${heights[i]})`);
+      }
+    } else if (freq) {
       const range = BIN_END - BIN_START;
       const binsPerBar = range / BAR_COUNT;
       for (let i = 0; i < BAR_COUNT; i++) {
@@ -58,20 +65,47 @@ export function createSoundbar(container: HTMLElement): SoundbarController {
         bars[i]?.style.setProperty('transform', `scaleY(${heights[i]})`);
       }
     }
+  }
+
+  function idleFrame(now: number): void {
+    const elapsed = now - idleStart;
+    const phase = (elapsed / IDLE_PERIOD_MS) * Math.PI * 2;
+    for (let i = 0; i < BAR_COUNT; i++) {
+      const wave = Math.sin(phase + (i / BAR_COUNT) * Math.PI * 1.5);
+      const h = MIN_HEIGHT + IDLE_AMPLITUDE * (0.5 + 0.5 * wave);
+      heights[i] = h;
+      bars[i]?.style.setProperty('transform', `scaleY(${h})`);
+    }
+  }
+
+  function frame(now: number): void {
+    if (mode === 'off') return;
+    if (mode === 'recording') {
+      recordingFrame();
+    } else if (mode === 'idle') {
+      idleFrame(now);
+    }
     raf = requestAnimationFrame(frame);
   }
 
   return {
     start() {
-      if (running) return;
-      running = true;
+      if (mode === 'recording') return;
+      mode = 'recording';
+      if (raf !== null) cancelAnimationFrame(raf);
+      raf = requestAnimationFrame(frame);
+    },
+    idle() {
+      if (mode === 'idle') return;
+      mode = 'idle';
+      idleStart = performance.now();
+      if (raf !== null) cancelAnimationFrame(raf);
       raf = requestAnimationFrame(frame);
     },
     stop() {
-      running = false;
+      mode = 'off';
       if (raf !== null) cancelAnimationFrame(raf);
       raf = null;
-      // Clear inline transforms so per-state CSS (done/error/etc.) wins.
       for (let i = 0; i < BAR_COUNT; i++) {
         heights[i] = MIN_HEIGHT;
         bars[i]?.style.removeProperty('transform');

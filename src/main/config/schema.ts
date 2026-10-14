@@ -13,6 +13,12 @@ export interface OverlayPosition {
   y: number;
 }
 
+export interface AppSkillRoute {
+  match: string;
+  enable: string[];
+  disable: string[];
+}
+
 /**
  * The fully-resolved runtime config. Every field is required and absolute
  * (paths are resolved relative to `process.cwd()`).
@@ -41,8 +47,21 @@ export interface ResolvedConfig {
   clipboardRestoreDelayMs: number;
   clipboardRetention: ClipboardRetention;
   injectionMethod: InjectionMethod;
+  progressiveInjection: boolean;
   queueMaxDepth: number;
   prewarm: boolean;
+
+  // Voice Activity Detection (VAD)
+  vadEnabled: boolean;
+  vadThresholdDb: number;
+  vadSilenceMs: number;
+  vadLeadInMs: number;
+
+  // Context capture
+  contextCapture: boolean;
+  clipboardContextEntries: number;
+  screenshotContext: boolean;
+  appSkillRoutes: AppSkillRoute[];
 
   // Overlay window
   overlayAnchor: OverlayAnchor;
@@ -50,6 +69,8 @@ export interface ResolvedConfig {
   overlayOffsetY: number;
   /** Persisted absolute screen position when anchor === 'free'. */
   overlayPosition: OverlayPosition | null;
+  /** Whether the overlay should be visible on startup. */
+  overlayVisible: boolean;
 
   // Prompt engineering
   systemPrompt: string;
@@ -94,14 +115,26 @@ export interface PartialConfig {
   clipboardRestoreDelayMs?: number;
   clipboardRetention?: ClipboardRetention;
   injectionMethod?: InjectionMethod;
+  progressiveInjection?: boolean;
   queueMaxDepth?: number;
   prewarm?: boolean;
+
+  vadEnabled?: boolean;
+  vadThresholdDb?: number;
+  vadSilenceMs?: number;
+  vadLeadInMs?: number;
+
+  contextCapture?: boolean;
+  clipboardContextEntries?: number;
+  screenshotContext?: boolean;
+  appSkillRoutes?: AppSkillRoute[];
 
   overlay?: {
     anchor?: OverlayAnchor;
     offsetX?: number;
     offsetY?: number;
     position?: OverlayPosition | null;
+    visible?: boolean;
   };
 
   systemPrompt?: string;
@@ -182,11 +215,45 @@ export function sanitizePartial(input: unknown, source: string): PartialConfig {
   const injectionMethod = pick(obj.injectionMethod, VALID_INJECTION_METHODS);
   if (injectionMethod) out.injectionMethod = injectionMethod;
 
+  if (typeof obj.progressiveInjection === 'boolean') {
+    out.progressiveInjection = obj.progressiveInjection;
+  }
+
   if (isNumber(obj.queueMaxDepth) && obj.queueMaxDepth >= 1) {
     out.queueMaxDepth = Math.floor(obj.queueMaxDepth);
   }
 
   if (typeof obj.prewarm === 'boolean') out.prewarm = obj.prewarm;
+
+  if (typeof obj.vadEnabled === 'boolean') out.vadEnabled = obj.vadEnabled;
+  if (isNumber(obj.vadThresholdDb) && obj.vadThresholdDb < 0) {
+    out.vadThresholdDb = obj.vadThresholdDb;
+  }
+  if (isNumber(obj.vadSilenceMs) && obj.vadSilenceMs > 0) {
+    out.vadSilenceMs = Math.floor(obj.vadSilenceMs);
+  }
+  if (isNumber(obj.vadLeadInMs) && obj.vadLeadInMs > 0) {
+    out.vadLeadInMs = Math.floor(obj.vadLeadInMs);
+  }
+
+  if (typeof obj.contextCapture === 'boolean') out.contextCapture = obj.contextCapture;
+  if (isNumber(obj.clipboardContextEntries) && obj.clipboardContextEntries >= 0) {
+    out.clipboardContextEntries = Math.min(Math.floor(obj.clipboardContextEntries), 5);
+  }
+  if (typeof obj.screenshotContext === 'boolean') out.screenshotContext = obj.screenshotContext;
+  if (Array.isArray(obj.appSkillRoutes)) {
+    out.appSkillRoutes = obj.appSkillRoutes.filter((route): route is AppSkillRoute => {
+      if (!route || typeof route !== 'object') return false;
+      const r = route as Record<string, unknown>;
+      return (
+        isString(r.match) &&
+        Array.isArray(r.enable) &&
+        r.enable.every((s) => isString(s) && SKILL_ID_RE.test(s)) &&
+        Array.isArray(r.disable) &&
+        r.disable.every((s) => isString(s) && SKILL_ID_RE.test(s))
+      );
+    });
+  }
 
   const overlay = obj.overlay;
   if (overlay && typeof overlay === 'object') {
@@ -196,6 +263,7 @@ export function sanitizePartial(input: unknown, source: string): PartialConfig {
     if (anchor) out.overlay.anchor = anchor;
     if (isNumber(o.offsetX)) out.overlay.offsetX = o.offsetX;
     if (isNumber(o.offsetY)) out.overlay.offsetY = o.offsetY;
+    if (typeof o.visible === 'boolean') out.overlay.visible = o.visible;
     if (o.position === null) out.overlay.position = null;
     else if (o.position && typeof o.position === 'object') {
       const p = o.position as Record<string, unknown>;

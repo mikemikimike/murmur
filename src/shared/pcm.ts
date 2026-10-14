@@ -15,6 +15,29 @@ export function floatsToInt16PCM(chunks: Float32Array[]): Int16Array {
   return out;
 }
 
+/**
+ * Loudness of the loudest `windowMs` stretch of 16-bit little-endian mono PCM,
+ * in dBFS (0 = full scale, -Infinity = digital silence). Using the loudest
+ * window rather than the overall average keeps short utterances in a long,
+ * mostly quiet capture from being mistaken for silence.
+ */
+export function peakWindowRmsDb(pcm: Uint8Array, sampleRate: number, windowMs = 50): number {
+  const view = new DataView(pcm.buffer, pcm.byteOffset, pcm.byteLength);
+  const samples = Math.floor(pcm.byteLength / 2);
+  const window = Math.max(1, Math.round((sampleRate * windowMs) / 1000));
+  let peakMeanSq = 0;
+  for (let start = 0; start < samples; start += window) {
+    const end = Math.min(samples, start + window);
+    let sumSq = 0;
+    for (let i = start; i < end; i++) {
+      const v = view.getInt16(i * 2, true) / 0x8000;
+      sumSq += v * v;
+    }
+    peakMeanSq = Math.max(peakMeanSq, sumSq / (end - start));
+  }
+  return peakMeanSq > 0 ? 10 * Math.log10(peakMeanSq) : Number.NEGATIVE_INFINITY;
+}
+
 export function downsample(input: Int16Array, fromRate: number, toRate: number): Int16Array {
   if (fromRate === toRate) return input;
   const ratio = fromRate / toRate;

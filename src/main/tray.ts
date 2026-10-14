@@ -26,7 +26,7 @@ function pngChunk(type: string, data: Buffer): Buffer {
   return Buffer.concat([len, typeBuf, data, crcBuf]);
 }
 
-function makeCirclePng(size: number, r: number, g: number, b: number): Buffer {
+function makeCirclePng(size: number, r: number, g: number, b: number, alpha = 255): Buffer {
   const half = size / 2;
   const rows: Buffer[] = [];
   for (let y = 0; y < size; y++) {
@@ -35,12 +35,12 @@ function makeCirclePng(size: number, r: number, g: number, b: number): Buffer {
     for (let x = 0; x < size; x++) {
       const cx = x - half + 0.5;
       const cy = y - half + 0.5;
-      const alpha = Math.sqrt(cx * cx + cy * cy) < half - 0.5 ? 255 : 0;
+      const pixelAlpha = Math.sqrt(cx * cx + cy * cy) < half - 0.5 ? alpha : 0;
       const o = 1 + x * 4;
       row[o] = r;
       row[o + 1] = g;
       row[o + 2] = b;
-      row[o + 3] = alpha;
+      row[o + 3] = pixelAlpha;
     }
     rows.push(row);
   }
@@ -57,23 +57,32 @@ function makeCirclePng(size: number, r: number, g: number, b: number): Buffer {
   ]);
 }
 
-function makeTrayIcon(r: number, g: number, b: number): NativeImage {
-  // macOS menu bar uses 22×22; other platforms use 16×16.
+function makeTrayIcon(r: number, g: number, b: number, alpha = 255): NativeImage {
+  // macOS menu bar uses 22x22; other platforms use 16x16.
   const size = process.platform === 'darwin' ? 22 : 16;
-  return nativeImage.createFromBuffer(makeCirclePng(size, r, g, b));
+  return nativeImage.createFromBuffer(makeCirclePng(size, r, g, b, alpha));
 }
 
 // Colors mirror the overlay CSS variables.
 // Compute once at module load — avoids PNG synthesis + deflate on every setState call.
 const ICON_IDLE = makeTrayIcon(167, 139, 250); // --accent purple
-const ICON_RECORDING = makeTrayIcon(248, 113, 113); // --recording red
+const ICON_RECORDING_BRIGHT = makeTrayIcon(248, 113, 113); // --recording red (full)
+const ICON_RECORDING_DIM = makeTrayIcon(248, 113, 113, 140); // --recording red (dimmed for pulse)
 const ICON_PROCESSING = makeTrayIcon(251, 191, 36); // --processing yellow
+const ICON_ERROR = makeTrayIcon(220, 38, 38); // error red (darker, distinct from recording)
 
-export type TrayIconState = 'idle' | 'recording' | 'processing';
+// Pulse animation frames: alternate between bright and dim recording icons.
+const RECORDING_FRAMES = [ICON_RECORDING_BRIGHT, ICON_RECORDING_DIM];
+const PULSE_INTERVAL_MS = 600;
+
+export type TrayIconState = 'idle' | 'recording' | 'processing' | 'error';
 
 export class TrayService {
   private tray: Tray | null = null;
   private isVisible: (() => boolean) | null = null;
+  private currentState: TrayIconState = 'idle';
+  private pulseTimer: ReturnType<typeof setInterval> | null = null;
+  private pulseFrame = 0;
   private callbacks: {
     onShow: () => void;
     onHide: () => void;
@@ -99,9 +108,27 @@ export class TrayService {
 
   setState(state: TrayIconState): void {
     if (!this.tray || this.tray.isDestroyed()) return;
-    if (state === 'recording') this.tray.setImage(ICON_RECORDING);
-    else if (state === 'processing') this.tray.setImage(ICON_PROCESSING);
-    else this.tray.setImage(ICON_IDLE);
+    if (state === this.currentState) return;
+    this.currentState = state;
+    this.stopPulse();
+
+    if (state === 'recording') {
+      this.tray.setImage(ICON_RECORDING_BRIGHT);
+      this.startPulse();
+    } else if (state === 'processing') {
+      this.tray.setImage(ICON_PROCESSING);
+    } else if (state === 'error') {
+      this.tray.setImage(ICON_ERROR);
+      this.tray.setToolTip('murmur - error');
+    } else {
+      this.tray.setImage(ICON_IDLE);
+    }
+
+    if (state !== 'error') {
+      this.tray.setToolTip('murmur');
+    }
+
+    this.rebuildMenu();
   }
 
   setVisibility(_visible: boolean): void {
@@ -109,8 +136,28 @@ export class TrayService {
   }
 
   destroy(): void {
+    this.stopPulse();
     if (this.tray && !this.tray.isDestroyed()) this.tray.destroy();
     this.tray = null;
+  }
+
+  private startPulse(): void {
+    this.pulseFrame = 0;
+    this.pulseTimer = setInterval(() => {
+      if (!this.tray || this.tray.isDestroyed()) {
+        this.stopPulse();
+        return;
+      }
+      this.pulseFrame = (this.pulseFrame + 1) % RECORDING_FRAMES.length;
+      this.tray.setImage(RECORDING_FRAMES[this.pulseFrame]!);
+    }, PULSE_INTERVAL_MS);
+  }
+
+  private stopPulse(): void {
+    if (this.pulseTimer !== null) {
+      clearInterval(this.pulseTimer);
+      this.pulseTimer = null;
+    }
   }
 
   private toggleOverlay(): void {

@@ -3,7 +3,22 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { describe, it } from 'node:test';
-import { isOnPath, whisperCliAvailable } from '../dist/main/platform.js';
+import { isOnPath, isPathInside, whisperCliAvailable } from '../dist/main/platform.js';
+
+describe('isPathInside', () => {
+  const logs = path.resolve(tmpdir(), 'murmur-logs');
+
+  it('accepts the dir itself and its descendants', () => {
+    assert.equal(isPathInside(logs, logs), true);
+    assert.equal(isPathInside(path.join(logs, '2026-10-14T10-00-00-000'), logs), true);
+  });
+
+  it('rejects siblings, parents, and traversal', () => {
+    assert.equal(isPathInside(`${logs}-evil`, logs), false);
+    assert.equal(isPathInside(path.dirname(logs), logs), false);
+    assert.equal(isPathInside(path.join(logs, '..', 'calc.exe'), logs), false);
+  });
+});
 
 describe('isOnPath', () => {
   it('returns true for a ubiquitous command', () => {

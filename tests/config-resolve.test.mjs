@@ -59,9 +59,9 @@ describe('loadConfig — non-whisper paths still resolve against config dir', ()
     });
   });
 
-  it('logsDir defaults to an absolute path under cwd when unspecified', () => {
-    withConfig({}, (loaded) => {
-      assert.equal(path.isAbsolute(loaded.resolved.logsDir), true);
+  it('logsDir defaults to <configDir>/logs when unspecified', () => {
+    withConfig({}, (loaded, tmp) => {
+      assert.equal(loaded.resolved.logsDir, path.resolve(tmp, 'logs'));
     });
   });
 });
