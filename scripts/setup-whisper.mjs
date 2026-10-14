@@ -10,6 +10,7 @@
 
 import { spawnSync } from 'node:child_process';
 import { createWriteStream, existsSync, mkdirSync, renameSync, rmSync } from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import process from 'node:process';
 import { Readable, Transform } from 'node:stream';
@@ -18,7 +19,28 @@ import { fileURLToPath } from 'node:url';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
-const root = path.resolve(__dirname, '..');
+const pkgRoot = path.resolve(__dirname, '..');
+
+// A git checkout keeps everything under the repo (./bin/whisper, ./models),
+// which is what `pnpm dev` expects. An npm / npx install must not: the package
+// dir is read-only-ish and, under npx, a throwaway cache. Install into the
+// same per-user dir that config.json points at instead.
+const isCheckout = existsSync(path.join(pkgRoot, '.git'));
+const root = isCheckout ? pkgRoot : userDataDir();
+
+/** Mirrors getUserDataDir() in src/main/config/index.ts. */
+function userDataDir() {
+  if (process.platform === 'win32') {
+    return path.join(
+      process.env.APPDATA || path.join(os.homedir(), 'AppData', 'Roaming'),
+      'murmur',
+    );
+  }
+  if (process.platform === 'darwin') {
+    return path.join(os.homedir(), 'Library', 'Application Support', 'murmur');
+  }
+  return path.join(process.env.XDG_CONFIG_HOME || path.join(os.homedir(), '.config'), 'murmur');
+}
 
 const MODEL_URL = 'https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.en.bin';
 
@@ -63,14 +85,9 @@ async function downloadModel(destPath) {
 async function setupWindows() {
   const script = path.join(__dirname, 'setup-whisper.ps1');
   log(`running ${script}`);
-  const res = spawnSync(
-    'powershell',
-    ['-ExecutionPolicy', 'Bypass', '-NoProfile', '-File', script],
-    {
-      stdio: 'inherit',
-      cwd: root,
-    },
-  );
+  const args = ['-ExecutionPolicy', 'Bypass', '-NoProfile', '-File', script];
+  if (!isCheckout) args.push('-InstallDir', root);
+  const res = spawnSync('powershell', args, { stdio: 'inherit', cwd: root });
   process.exit(res.status ?? 0);
 }
 
