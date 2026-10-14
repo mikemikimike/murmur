@@ -5,6 +5,8 @@ export const IPC_STOP_RECORDING = 'murmur:stop-recording';
 export const IPC_INFO = 'murmur:info';
 export const IPC_TOKEN = 'murmur:token';
 export const IPC_REFINE_LAST = 'murmur:refine-last';
+export const IPC_VAD_CONFIG = 'murmur:vad-config';
+export const IPC_VAD_MODE = 'murmur:vad-mode';
 
 // renderer → main
 export const IPC_AUDIO_CHUNK = 'murmur:audio-chunk';
@@ -17,6 +19,9 @@ export const IPC_BEGIN_WINDOW_DRAG = 'murmur:begin-window-drag';
 export const IPC_END_WINDOW_DRAG = 'murmur:end-window-drag';
 export const IPC_OPEN_CONTROL_PANEL = 'murmur:open-control-panel';
 export const IPC_QUIT = 'murmur:quit';
+export const IPC_VAD_SPEECH_START = 'murmur:vad-speech-start';
+export const IPC_VAD_SILENCE_TIMEOUT = 'murmur:vad-silence-timeout';
+export const IPC_VAD_RMS = 'murmur:vad-rms';
 
 // main → renderer
 export const IPC_QUEUE_DEPTH = 'murmur:queue-depth'; // payload: number
@@ -28,6 +33,7 @@ export const IPC_OPEN_LOG_DIR = 'murmur:open-log-dir'; // payload: string
 export type Status =
   | 'idle'
   | 'recording'
+  | 'vad-listening'
   | 'transcribing'
   | 'transcribing-streaming'
   | 'refining'
@@ -63,4 +69,17 @@ export interface InfoPayload {
 export interface ErrorPayload {
   message: string;
   sessionDir: string;
+}
+
+/** Sent right before IPC_START_RECORDING to say how this capture should end. */
+export interface VadModePayload {
+  /** true for click-to-record (stop on silence); false for push-to-talk. */
+  autoStop: boolean;
+}
+
+export interface VadConfigPayload {
+  enabled: boolean;
+  thresholdDb: number;
+  silenceMs: number;
+  leadInMs: number;
 }

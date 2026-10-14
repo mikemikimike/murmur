@@ -9,10 +9,13 @@ import {
   IPC_STATUS,
   IPC_STOP_RECORDING,
   IPC_TOKEN,
+  IPC_VAD_MODE,
   type Status,
   type TokenPayload,
   type TokenPhase,
+  type VadModePayload,
 } from '../shared/ipc.js';
+import { peakWindowRmsDb } from '../shared/pcm.js';
 import type { AudioRecorder } from './audio/recorder.js';
 import type { ResolvedConfig } from './config/index.js';
 import type { InjectOptions } from './inject.js';
@@ -53,6 +56,9 @@ export interface ProcessPcmOptions {
   skillIds?: string[];
 }
 
+/** How a capture was started: held hotkey, or click/toggle (VAD may auto-stop it). */
+export type CaptureMode = 'ptt' | 'toggle';
+
 export interface RefineTextOptions {
   skillIds?: string[];
 }
@@ -70,7 +76,7 @@ export interface PipelineDeps {
   onStatus?: (s: Status) => void;
   emitStatus?: (s: Status) => void;
   onToken?: (token: string, phase: TokenPhase) => void;
-  requestRendererStart?: () => void;
+  requestRendererStart?: (autoStop: boolean) => void;
   requestRendererStop?: () => void;
   inject?: (text: string, opts: InjectOptions) => Promise<void>;
   transcribeAudio?: typeof transcribe;
@@ -109,6 +115,7 @@ export class Pipeline {
   private lastTranscription: string | null = null;
   private currentStatus: Status = 'idle';
   private statusBeforeQueueFull: Status = 'idle';
+  private stopRequested = false;
 
   constructor(private readonly deps: PipelineDeps) {}
 
@@ -178,9 +185,11 @@ export class Pipeline {
     }
   }
 
-  private requestRendererStart(): void {
-    this.deps.requestRendererStart?.();
-    this.deps.getWindow?.()?.webContents.send(IPC_START_RECORDING);
+  private requestRendererStart(autoStop: boolean): void {
+    this.deps.requestRendererStart?.(autoStop);
+    const win = this.deps.getWindow?.();
+    win?.webContents.send(IPC_VAD_MODE, { autoStop } satisfies VadModePayload);
+    win?.webContents.send(IPC_START_RECORDING);
   }
 
   private requestRendererStop(): void {
@@ -241,7 +250,12 @@ export class Pipeline {
     return skillIds ?? this.deps.cfg.enabledSkills;
   }
 
-  start(): void {
+  /**
+   * Begin an overlay capture. With VAD on, the overlay shows "Listening…"
+   * until the renderer reports speech ({@link speechStarted}); in toggle mode
+   * it also ends the capture itself after a silence ({@link vadSilence}).
+   */
+  start(mode: CaptureMode = 'ptt'): void {
     if (this.hasHeadlessPending()) {
       console.warn('[pipeline] start ignored: headless recording active');
       return;
@@ -252,10 +266,29 @@ export class Pipeline {
     }
     this.cancelIdle();
     this.state = 'recording';
+    this.stopRequested = false;
     this.session = createSession(this.deps.cfg.logsDir, this.deps.cfg.logMode);
-    console.log(`[pipeline] session=${this.session.dir}`);
-    this.setStatus('recording');
-    this.requestRendererStart();
+    console.log(`[pipeline] session=${this.session.dir} mode=${mode}`);
+    this.setStatus(this.deps.cfg.vadEnabled ? 'vad-listening' : 'recording');
+    this.requestRendererStart(mode === 'toggle');
+  }
+
+  /** Renderer VAD heard the first speech of the current capture. */
+  speechStarted(): void {
+    if (this.state === 'recording' && this.currentStatus === 'vad-listening') {
+      this.setStatus('recording');
+    }
+  }
+
+  /** Renderer VAD saw a long enough silence after speech in a toggle capture. */
+  vadSilence(): void {
+    if (this.hasHeadlessPending()) return;
+    if (this.state === 'recording') {
+      console.log('[pipeline] VAD silence: auto-stopping');
+      this.stop();
+    } else if (this.state === 'processing' && this.backgroundSession !== null) {
+      this.stopBackgroundCapture();
+    }
   }
 
   stop(): void {
@@ -267,6 +300,9 @@ export class Pipeline {
       console.warn(`[pipeline] stop ignored: state=${this.state}`);
       return;
     }
+    // VAD auto-stop and a manual click can race; only stop the renderer once.
+    if (this.stopRequested) return;
+    this.stopRequested = true;
     this.requestRendererStop();
 
     this.audioTimeout = setTimeout(() => {
@@ -280,13 +316,13 @@ export class Pipeline {
   toggle(): void {
     if (this.hasHeadlessPending()) return;
     if (this.state === 'idle') {
-      this.start();
+      this.start('toggle');
     } else if (this.state === 'recording') {
       this.stop();
     } else if (this.state === 'processing') {
       if (this.backgroundSession === null) {
         this.backgroundSession = createSession(this.deps.cfg.logsDir, this.deps.cfg.logMode);
-        this.requestRendererStart();
+        this.requestRendererStart(true);
       } else {
         this.stopBackgroundCapture();
       }
@@ -489,6 +525,14 @@ export class Pipeline {
       timings.audioBytes = wav.length;
       timings.audioDurationMs = Math.round((pcm.length / 2 / cfg.sampleRate) * 1000);
       if (timings.audioDurationMs < MIN_SPEECH_MS) throw new NoSpeechError();
+      // Same threshold as the overlay's VAD, applied to every capture path
+      // (overlay, hotkey, MCP's recorder). Whisper turns near-silence into
+      // phantom words ("you", "Thank you."), so never hand it a quiet clip.
+      if (cfg.vadEnabled) {
+        const peakDb = peakWindowRmsDb(pcm, cfg.sampleRate);
+        timings.peakDb = Number.isFinite(peakDb) ? Math.round(peakDb) : 'silent';
+        if (peakDb < cfg.vadThresholdDb) throw new NoSpeechError();
+      }
 
       this.setStatus(canStreamWhisper ? 'transcribing-streaming' : 'transcribing');
       const tStart = Date.now();

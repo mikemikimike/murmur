@@ -191,6 +191,7 @@
       }
 
       .state-recording #bars,
+      .state-vad-listening #bars,
       .state-transcribing #bars,
       .state-transcribing-streaming #bars,
       .state-refining #bars,
@@ -214,6 +215,18 @@
 
       .state-recording .bar {
         background: linear-gradient(180deg, #fca5a5, var(--recording));
+      }
+
+      /* Mic is open but no speech yet: same family as recording, quieter. */
+      .state-vad-listening .bar {
+        background: linear-gradient(180deg, #fecaca, #fca5a5);
+        opacity: 0.6;
+      }
+
+      .state-vad-listening #trigger {
+        box-shadow:
+          inset 0 0 0 1.5px rgba(248, 113, 113, 0.25),
+          0 0 0 4px rgba(248, 113, 113, 0.08);
       }
 
       .state-transcribing .bar,
@@ -276,6 +289,7 @@
       }
 
       .state-recording #status-chip,
+      .state-vad-listening #status-chip,
       .state-transcribing #status-chip,
       .state-transcribing-streaming #status-chip,
       .state-refining #status-chip,
@@ -287,6 +301,7 @@
       }
 
       .state-recording #status-chip { color: var(--recording); }
+      .state-vad-listening #status-chip { color: #fca5a5; opacity: 0.8; }
       .state-transcribing #status-chip,
       .state-transcribing-streaming #status-chip,
       .state-refining #status-chip,

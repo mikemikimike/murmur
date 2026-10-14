@@ -54,6 +54,11 @@ export const DEFAULT_CONFIG: Required<Omit<PartialConfig, 'apiKey' | 'overlay'>>
   queueMaxDepth: 3,
   prewarm: true,
 
+  vadEnabled: true,
+  vadThresholdDb: -40,
+  vadSilenceMs: 900,
+  vadLeadInMs: 300,
+
   overlay: {
     anchor: 'bottom-center',
     offsetX: 0,

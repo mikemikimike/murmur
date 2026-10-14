@@ -16,6 +16,10 @@ import {
   IPC_SET_MOUSE_INTERACTIVE,
   IPC_SHOW_CONTEXT_MENU,
   IPC_TOGGLE_RECORDING,
+  IPC_VAD_CONFIG,
+  IPC_VAD_SILENCE_TIMEOUT,
+  IPC_VAD_SPEECH_START,
+  type VadConfigPayload,
 } from '../shared/ipc.js';
 import { CommandAudioRecorder } from './audio/recorder.js';
 import { printReadyBanner } from './cli/status.js';
@@ -125,6 +129,13 @@ function pushInfoToRenderer(): void {
     IPC_INFO,
     buildInfo(loaded, controlPanel?.url ?? 'http://localhost:7331'),
   );
+  const r = loaded.resolved;
+  mainWindow.webContents.send(IPC_VAD_CONFIG, {
+    enabled: r.vadEnabled,
+    thresholdDb: r.vadThresholdDb,
+    silenceMs: r.vadSilenceMs,
+    leadInMs: r.vadLeadInMs,
+  } satisfies VadConfigPayload);
 }
 
 function persistOverlayVisibility(visible: boolean): void {
@@ -254,6 +265,14 @@ function wireIPC(): void {
     pipeline?.toggle();
   });
 
+  ipcMain.on(IPC_VAD_SPEECH_START, () => {
+    pipeline?.speechStarted();
+  });
+
+  ipcMain.on(IPC_VAD_SILENCE_TIMEOUT, () => {
+    pipeline?.vadSilence();
+  });
+
   ipcMain.on(IPC_REQUEST_INFO, () => {
     pushInfoToRenderer();
   });
@@ -356,7 +375,7 @@ function createMainPipeline(): Pipeline {
     getWindow: () => mainWindow,
     onStatus: (s) => {
       let iconState: TrayIconState = 'idle';
-      if (s === 'recording') iconState = 'recording';
+      if (s === 'recording' || s === 'vad-listening') iconState = 'recording';
       else if (s === 'error') iconState = 'error';
       else if (
         s === 'transcribing' ||

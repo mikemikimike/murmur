@@ -448,6 +448,68 @@ describe('Pipeline overlay path', () => {
     assert.equal(refinements.at(-1).userPrompt, 'keep me');
   });
 
+  it('VAD gate drops a quiet capture before whisper runs', async () => {
+    const cfg = makeFakeConfig({ _baseDir: tempBase, vadEnabled: true, vadThresholdDb: -40 });
+    let transcribed = false;
+    const pipeline = new Pipeline({
+      cfg,
+      provider: makeFakeProvider([]),
+      transcribeAudio: async () => {
+        transcribed = true;
+        return { text: 'you', stderr: '', durationMs: 1 };
+      },
+    });
+    const quiet = Buffer.alloc(32_000);
+    for (let i = 0; i < quiet.length; i += 2) quiet.writeInt16LE(i % 4 ? 30 : -30, i); // ~-60 dBFS
+    await assert.rejects(pipeline.processPcm(quiet, { inject: false }), { name: 'NoSpeechError' });
+    assert.equal(transcribed, false);
+
+    // samplePcm() is a constant 1000 (~-30 dBFS): passes the gate.
+    const result = await pipeline.processPcm(samplePcm(), { inject: false });
+    assert.equal(result.transcription, 'you');
+  });
+
+  it('click-to-record listens, flips to recording on speech, and auto-stops on silence', async () => {
+    const cfg = makeFakeConfig({ _baseDir: tempBase, vadEnabled: true });
+    const statuses = [];
+    const starts = [];
+    let stops = 0;
+    const pipeline = new Pipeline({
+      cfg,
+      provider: makeFakeProvider([]),
+      emitStatus: (s) => statuses.push(s),
+      requestRendererStart: (autoStop) => starts.push(autoStop),
+      requestRendererStop: () => {
+        stops++;
+      },
+      transcribeAudio: async () => ({ text: 'x', stderr: '', durationMs: 1 }),
+      inject: async () => {},
+    });
+
+    pipeline.toggle();
+    assert.deepEqual(starts, [true]);
+    assert.equal(statuses.at(-1), 'vad-listening');
+    pipeline.speechStarted();
+    assert.equal(statuses.at(-1), 'recording');
+
+    pipeline.vadSilence();
+    pipeline.toggle(); // user clicks at the same moment: must not stop twice
+    assert.equal(stops, 1);
+    await pipeline.handleAudioChunk(samplePcm());
+    assert.ok(statuses.includes('done'));
+  });
+
+  it('push-to-talk asks the renderer not to auto-stop', () => {
+    const starts = [];
+    const pipeline = new Pipeline({
+      cfg: makeFakeConfig({ _baseDir: tempBase }),
+      provider: makeFakeProvider([]),
+      requestRendererStart: (autoStop) => starts.push(autoStop),
+    });
+    pipeline.start();
+    assert.deepEqual(starts, [false]);
+  });
+
   it('processPcm() defaults inject to true and emits injecting status', async () => {
     const cfg = makeFakeConfig({ _baseDir: tempBase });
     loadSkills(cfg.skillsDir);

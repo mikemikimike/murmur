@@ -1,6 +1,7 @@
 import { LOGO_SVG } from './logo.js';
 import { startCapture, stopCapture } from './recorder.js';
 import { createSoundbar } from './soundbar.js';
+import type { VadConfig } from './vad.js';
 
 declare global {
   interface Window {
@@ -25,6 +26,10 @@ declare global {
       retry: () => void;
       refineLast: () => void;
       openLogDir: (dir: string) => void;
+      onVadConfig: (cb: (cfg: VadConfig) => void) => void;
+      onVadMode: (cb: (mode: { autoStop: boolean }) => void) => void;
+      vadSpeechStart: () => void;
+      vadSilenceTimeout: () => void;
     };
   }
 }
@@ -48,6 +53,7 @@ interface TokenPayload {
 
 const STATES = [
   'idle',
+  'vad-listening',
   'recording',
   'transcribing',
   'transcribing-streaming',
@@ -63,6 +69,7 @@ type StateName = (typeof STATES)[number];
 
 const STATE_LABELS: Record<StateName, string> = {
   idle: 'idle',
+  'vad-listening': 'Listening\u2026',
   recording: 'Recording\u2026',
   transcribing: 'Transcribing\u2026',
   'transcribing-streaming': 'Transcribing\u2026',
@@ -123,7 +130,7 @@ function setState(state: StateName): void {
     streamPhase = null;
   }
 
-  if (state === 'recording') {
+  if (state === 'recording' || state === 'vad-listening') {
     overlay.classList.add('expanded');
     soundbar.start();
   } else if (state === 'idle') {
@@ -242,9 +249,25 @@ window.murmur.onToken((payload: TokenPayload) => {
   }
 });
 
+let vadConfig: VadConfig = { enabled: false, thresholdDb: -40, silenceMs: 900, leadInMs: 300 };
+let autoStop = false;
+
+window.murmur.onVadConfig((cfg) => {
+  vadConfig = cfg;
+});
+
+window.murmur.onVadMode((mode) => {
+  autoStop = mode.autoStop;
+});
+
 window.murmur.onStartRecording(async () => {
   try {
-    await startCapture();
+    await startCapture({
+      vad: vadConfig,
+      autoStop,
+      onSpeechStart: () => window.murmur.vadSpeechStart(),
+      onSilenceTimeout: () => window.murmur.vadSilenceTimeout(),
+    });
   } catch (err) {
     console.error('[renderer] startCapture failed:', err);
   }

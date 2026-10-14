@@ -1,7 +1,35 @@
 // tests/pcm.test.mjs
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import { downsample, floatsToInt16PCM } from '../dist/shared/pcm.js';
+import { downsample, floatsToInt16PCM, peakWindowRmsDb } from '../dist/shared/pcm.js';
+
+describe('peakWindowRmsDb', () => {
+  const rate = 16000;
+  const pcm = (ms, amp, at = []) => {
+    const buf = Buffer.alloc(Math.round((rate * ms) / 1000) * 2);
+    for (let i = 0; i < buf.length / 2; i++) buf.writeInt16LE(Math.round(amp), i * 2);
+    for (const [fromMs, toMs, a] of at) {
+      for (let i = (rate * fromMs) / 1000; i < (rate * toMs) / 1000; i++) {
+        buf.writeInt16LE(i % 2 ? a : -a, i * 2);
+      }
+    }
+    return buf;
+  };
+
+  it('reports -Infinity for digital silence', () => {
+    assert.equal(peakWindowRmsDb(pcm(500, 0), rate), Number.NEGATIVE_INFINITY);
+  });
+
+  it('measures a full-scale square wave near 0 dBFS', () => {
+    assert.ok(peakWindowRmsDb(pcm(200, 0, [[0, 200, 32767]]), rate) > -0.1);
+  });
+
+  it('finds a short loud burst inside a long quiet capture', () => {
+    // 3 s at ~-60 dBFS with 100 ms at ~-20 dBFS
+    const db = peakWindowRmsDb(pcm(3000, 33, [[1500, 1600, 3277]]), rate);
+    assert.ok(db > -21 && db < -19, `got ${db}`);
+  });
+});
 
 describe('floatsToInt16PCM', () => {
   it('converts +1.0 to max positive int16', () => {

@@ -45,6 +45,12 @@ export interface ResolvedConfig {
   queueMaxDepth: number;
   prewarm: boolean;
 
+  // Voice Activity Detection (VAD)
+  vadEnabled: boolean;
+  vadThresholdDb: number;
+  vadSilenceMs: number;
+  vadLeadInMs: number;
+
   // Overlay window
   overlayAnchor: OverlayAnchor;
   overlayOffsetX: number;
@@ -100,6 +106,11 @@ export interface PartialConfig {
   progressiveInjection?: boolean;
   queueMaxDepth?: number;
   prewarm?: boolean;
+
+  vadEnabled?: boolean;
+  vadThresholdDb?: number;
+  vadSilenceMs?: number;
+  vadLeadInMs?: number;
 
   overlay?: {
     anchor?: OverlayAnchor;
@@ -196,6 +207,17 @@ export function sanitizePartial(input: unknown, source: string): PartialConfig {
   }
 
   if (typeof obj.prewarm === 'boolean') out.prewarm = obj.prewarm;
+
+  if (typeof obj.vadEnabled === 'boolean') out.vadEnabled = obj.vadEnabled;
+  if (isNumber(obj.vadThresholdDb) && obj.vadThresholdDb < 0) {
+    out.vadThresholdDb = obj.vadThresholdDb;
+  }
+  if (isNumber(obj.vadSilenceMs) && obj.vadSilenceMs > 0) {
+    out.vadSilenceMs = Math.floor(obj.vadSilenceMs);
+  }
+  if (isNumber(obj.vadLeadInMs) && obj.vadLeadInMs > 0) {
+    out.vadLeadInMs = Math.floor(obj.vadLeadInMs);
+  }
 
   const overlay = obj.overlay;
   if (overlay && typeof overlay === 'object') {

@@ -89,6 +89,23 @@ function readEnv(): PartialConfig {
   } else if (e.MURMUR_PROGRESSIVE_INJECTION === 'false' || e.MURMUR_PROGRESSIVE_INJECTION === '0') {
     partial.progressiveInjection = false;
   }
+  if (e.MURMUR_VAD_ENABLED === 'true' || e.MURMUR_VAD_ENABLED === '1') {
+    partial.vadEnabled = true;
+  } else if (e.MURMUR_VAD_ENABLED === 'false' || e.MURMUR_VAD_ENABLED === '0') {
+    partial.vadEnabled = false;
+  }
+  if (e.MURMUR_VAD_THRESHOLD_DB) {
+    const n = Number(e.MURMUR_VAD_THRESHOLD_DB);
+    if (Number.isFinite(n) && n < 0) partial.vadThresholdDb = n;
+  }
+  if (e.MURMUR_VAD_SILENCE_MS) {
+    const n = Number(e.MURMUR_VAD_SILENCE_MS);
+    if (Number.isFinite(n) && n > 0) partial.vadSilenceMs = n;
+  }
+  if (e.MURMUR_VAD_LEAD_IN_MS) {
+    const n = Number(e.MURMUR_VAD_LEAD_IN_MS);
+    if (Number.isFinite(n) && n > 0) partial.vadLeadInMs = n;
+  }
   if (e.MURMUR_LOGS_DIR) partial.logsDir = e.MURMUR_LOGS_DIR;
   if (e.MURMUR_LOG_MODE === 'metadata-only' || e.MURMUR_LOG_MODE === 'full') {
     partial.logMode = e.MURMUR_LOG_MODE;
@@ -384,6 +401,22 @@ export function loadConfig(opts: LoadConfigOptions): LoadedConfig {
     pickFirst(sources.cli.prewarm, sources.file.prewarm, sources.env.prewarm) ??
     DEFAULT_CONFIG.prewarm;
 
+  const vadEnabled =
+    pickFirst(sources.cli.vadEnabled, sources.file.vadEnabled, sources.env.vadEnabled) ??
+    DEFAULT_CONFIG.vadEnabled;
+  const vadThresholdDb =
+    pickFirst(
+      sources.cli.vadThresholdDb,
+      sources.file.vadThresholdDb,
+      sources.env.vadThresholdDb,
+    ) ?? DEFAULT_CONFIG.vadThresholdDb;
+  const vadSilenceMs =
+    pickFirst(sources.cli.vadSilenceMs, sources.file.vadSilenceMs, sources.env.vadSilenceMs) ??
+    DEFAULT_CONFIG.vadSilenceMs;
+  const vadLeadInMs =
+    pickFirst(sources.cli.vadLeadInMs, sources.file.vadLeadInMs, sources.env.vadLeadInMs) ??
+    DEFAULT_CONFIG.vadLeadInMs;
+
   const overlay = mergeOverlay(sources);
 
   const systemPrompt =
@@ -433,6 +466,10 @@ export function loadConfig(opts: LoadConfigOptions): LoadedConfig {
       injectionMethod === 'clipboard' && progressiveInjection ? false : progressiveInjection,
     queueMaxDepth,
     prewarm,
+    vadEnabled,
+    vadThresholdDb,
+    vadSilenceMs,
+    vadLeadInMs,
     overlayAnchor: overlay.anchor,
     overlayOffsetX: overlay.offsetX,
     overlayOffsetY: overlay.offsetY,
@@ -494,6 +531,10 @@ function computeValueSources(sources: MergeSources): ConfigValueSources {
     'progressiveInjection',
     'queueMaxDepth',
     'prewarm',
+    'vadEnabled',
+    'vadThresholdDb',
+    'vadSilenceMs',
+    'vadLeadInMs',
     'logMode',
     'systemPrompt',
     'enabledSkills',
@@ -534,6 +575,10 @@ function computeOverrides(sources: MergeSources): ConfigOverrides {
     'progressiveInjection',
     'queueMaxDepth',
     'prewarm',
+    'vadEnabled',
+    'vadThresholdDb',
+    'vadSilenceMs',
+    'vadLeadInMs',
     'logMode',
     'systemPrompt',
     'enabledSkills',
