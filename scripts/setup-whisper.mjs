@@ -9,9 +9,11 @@
 // whisper-cli binary on their PATH.
 
 import { spawnSync } from 'node:child_process';
-import { createWriteStream, existsSync, mkdirSync } from 'node:fs';
+import { createWriteStream, existsSync, mkdirSync, renameSync, rmSync } from 'node:fs';
 import path from 'node:path';
 import process from 'node:process';
+import { Readable, Transform } from 'node:stream';
+import { pipeline } from 'node:stream/promises';
 import { fileURLToPath } from 'node:url';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -35,20 +37,26 @@ async function downloadModel(destPath) {
   if (!res.ok || !res.body) {
     throw new Error(`download failed: HTTP ${res.status}`);
   }
-  const stream = createWriteStream(destPath);
-  const reader = res.body.getReader();
+  // Write to .part and rename on success so an interrupted download never
+  // leaves a truncated model that the existsSync() check above would accept.
+  const partPath = `${destPath}.part`;
   let total = 0;
-  while (true) {
-    const { value, done } = await reader.read();
-    if (done) break;
-    total += value.byteLength;
-    stream.write(value);
+  try {
+    await pipeline(
+      Readable.fromWeb(res.body),
+      new Transform({
+        transform(chunk, _enc, cb) {
+          total += chunk.byteLength;
+          cb(null, chunk);
+        },
+      }),
+      createWriteStream(partPath),
+    );
+    renameSync(partPath, destPath);
+  } catch (err) {
+    rmSync(partPath, { force: true });
+    throw err;
   }
-  stream.end();
-  await new Promise((resolve, reject) => {
-    stream.on('finish', resolve);
-    stream.on('error', reject);
-  });
   log(`model ready (${(total / 1024 / 1024).toFixed(1)} MB)`);
 }
 
