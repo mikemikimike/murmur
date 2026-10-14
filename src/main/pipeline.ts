@@ -27,6 +27,20 @@ type PipelineState = 'idle' | 'recording' | 'processing';
 
 const AUDIO_TIMEOUT_MS = 10_000;
 const STATUS_LINGER_MS = 1_500;
+/** Captures shorter than this are accidental hotkey taps, not prompts. */
+const MIN_SPEECH_MS = 250;
+
+/**
+ * Thrown when a capture contains no speech (too short, or whisper only heard
+ * silence/noise). The hotkey flow treats it as a quiet no-op instead of an
+ * error; programmatic callers (MCP) still receive it as a rejection.
+ */
+export class NoSpeechError extends Error {
+  constructor() {
+    super('no speech detected');
+    this.name = 'NoSpeechError';
+  }
+}
 
 export interface ProcessPcmResult {
   text: string;
@@ -436,6 +450,7 @@ export class Pipeline {
       if (cfg.logMode === 'full') session.writeAudio(wav);
       timings.audioBytes = wav.length;
       timings.audioDurationMs = Math.round((pcm.length / 2 / cfg.sampleRate) * 1000);
+      if (timings.audioDurationMs < MIN_SPEECH_MS) throw new NoSpeechError();
 
       this.setStatus(canStreamWhisper ? 'transcribing-streaming' : 'transcribing');
       const tStart = Date.now();
@@ -459,7 +474,7 @@ export class Pipeline {
         `[pipeline] transcription complete (${timings.transcribeMs} ms, ${transcription.length} chars)`,
       );
 
-      if (!transcription) throw new Error('whisper returned empty transcription');
+      if (!transcription) throw new NoSpeechError();
 
       this.lastTranscription = transcription;
       this.lastSkillIds = this.resolveSkillIds(opts.skillIds);
@@ -519,9 +534,15 @@ export class Pipeline {
     } catch (err) {
       if (injector) injector.abort();
       if (cfg.logMode !== 'full' && transientWavPath) rmSync(transientWavPath, { force: true });
+      timings.totalMs = Date.now() - pipelineStart;
+      if (err instanceof NoSpeechError) {
+        console.log('[pipeline] no speech detected, nothing to refine');
+        timings.outcome = 'no-speech';
+        session.writeTimings(timings);
+        throw err;
+      }
       console.error('[pipeline] error:', err);
       session.writeError(err);
-      timings.totalMs = Date.now() - pipelineStart;
       session.writeTimings(timings);
       this.setStatus('error');
       throw err;
@@ -540,9 +561,15 @@ export class Pipeline {
       this.scheduleIdle();
       this.processNextQueued();
     } catch (err) {
+      this.state = 'idle';
+      if (err instanceof NoSpeechError) {
+        // Accidental tap or silence: nothing to retry, no error toast.
+        this.setStatus('idle');
+        this.processNextQueued();
+        return;
+      }
       this.lastErrorSessionDir = session.dir;
       this.lastErrorAudioBuffer = buffer.slice(0);
-      this.state = 'idle';
       const message = err instanceof Error ? err.message : String(err);
       this.deps.getWindow?.()?.webContents.send(IPC_ERROR, {
         message,

@@ -66,9 +66,9 @@ function makeFakeProvider(refinements) {
   };
 }
 
-/** Minimal 16-bit mono PCM (~10 ms at 16 kHz). */
-function samplePcm() {
-  const pcm = Buffer.alloc(320, 0);
+/** 16-bit mono PCM, 1 s at 16 kHz (above the pipeline's minimum speech length). */
+function samplePcm(bytes = 32_000) {
+  const pcm = Buffer.alloc(bytes, 0);
   for (let i = 0; i < pcm.length; i += 2) pcm.writeInt16LE(1000, i);
   return pcm.buffer.slice(pcm.byteOffset, pcm.byteOffset + pcm.byteLength);
 }
@@ -336,6 +336,58 @@ describe('Pipeline overlay path', () => {
 
     await pending;
     assert.equal(rendererStops.length, 0);
+  });
+
+  it('treats an empty transcription as no speech: no refine, no inject, no error', async () => {
+    const cfg = makeFakeConfig({ _baseDir: tempBase });
+    loadSkills(cfg.skillsDir);
+    const statuses = [];
+    const refinements = [];
+    const injections = [];
+    const sent = [];
+
+    const pipeline = new Pipeline({
+      cfg,
+      provider: makeFakeProvider(refinements),
+      emitStatus: (s) => statuses.push(s),
+      getWindow: () => ({ webContents: { send: (ch, payload) => sent.push([ch, payload]) } }),
+      requestRendererStart: () => {},
+      transcribeAudio: async () => ({ text: '', stderr: '', durationMs: 1 }),
+      inject: async (text) => injections.push(text),
+    });
+
+    pipeline.start();
+    await pipeline.handleAudioChunk(samplePcm());
+
+    assert.equal(refinements.length, 0);
+    assert.equal(injections.length, 0);
+    assert.equal(statuses.includes('error'), false);
+    assert.equal(statuses.at(-1), 'idle');
+    assert.equal(
+      sent.some(([ch]) => ch === 'murmur:error'),
+      false,
+    );
+    assert.equal(pipeline.isIdle(), true);
+    assert.equal(pipeline.hasLastTranscription(), false);
+  });
+
+  it('skips whisper entirely for an accidental tap', async () => {
+    const cfg = makeFakeConfig({ _baseDir: tempBase });
+    let transcribed = false;
+    const pipeline = new Pipeline({
+      cfg,
+      provider: makeFakeProvider([]),
+      transcribeAudio: async () => {
+        transcribed = true;
+        return { text: 'should not run', stderr: '', durationMs: 1 };
+      },
+    });
+
+    // 100 ms of audio
+    await assert.rejects(pipeline.processPcm(samplePcm(3_200), { inject: false }), {
+      name: 'NoSpeechError',
+    });
+    assert.equal(transcribed, false);
   });
 
   it('processPcm() defaults inject to true and emits injecting status', async () => {
