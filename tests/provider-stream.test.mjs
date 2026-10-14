@@ -114,4 +114,15 @@ describe('streaming providers', () => {
       /overloaded_error: Overloaded/,
     );
   });
+
+  it('anthropic preflight asks for the full model list', async () => {
+    let url = '';
+    globalThis.fetch = async (u) => {
+      url = String(u);
+      return new Response(JSON.stringify({ data: [{ id: 'm' }] }), { status: 200 });
+    };
+    const p = new AnthropicProvider({ ...CFG, id: 'anthropic', baseUrl: 'http://x/v1' });
+    assert.equal(await p.preflight(), null);
+    assert.match(url, /\/models\?limit=1000$/);
+  });
 });

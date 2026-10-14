@@ -170,7 +170,9 @@ export class AnthropicProvider implements LlmProvider {
 
     let models: AnthropicModelsResponse;
     try {
-      const res = await fetch(`${this.config.baseUrl}/models`, {
+      // The list is paginated (20 per page by default); without a high limit a
+      // perfectly valid model can be reported as "not found" and block launch.
+      const res = await fetch(`${this.config.baseUrl}/models?limit=1000`, {
         headers: this.headers(),
         signal: AbortSignal.timeout(5_000),
       });
