@@ -149,6 +149,7 @@ function mergeOverlay(sources: MergeSources): {
   offsetX: number;
   offsetY: number;
   position: OverlayPosition | null;
+  visible: boolean;
 } {
   const cli = sources.cli.overlay ?? {};
   const file = sources.file.overlay ?? {};
@@ -162,6 +163,7 @@ function mergeOverlay(sources: MergeSources): {
     offsetX: pickFirst(cli.offsetX, file.offsetX, env.offsetX) ?? DEFAULT_CONFIG.overlay.offsetX,
     offsetY: pickFirst(cli.offsetY, file.offsetY, env.offsetY) ?? DEFAULT_CONFIG.overlay.offsetY,
     position,
+    visible: pickFirst(cli.visible, file.visible, env.visible) ?? true,
   };
 }
 
@@ -405,6 +407,7 @@ export function loadConfig(opts: LoadConfigOptions): LoadedConfig {
     overlayOffsetX: overlay.offsetX,
     overlayOffsetY: overlay.offsetY,
     overlayPosition: overlay.position,
+    overlayVisible: overlay.visible,
     systemPrompt,
     enabledSkills,
     controlPanelPort,

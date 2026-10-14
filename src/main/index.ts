@@ -125,6 +125,18 @@ function pushInfoToRenderer(): void {
   );
 }
 
+function persistOverlayVisibility(visible: boolean): void {
+  if (!loaded) return;
+  loaded.resolved.overlayVisible = visible;
+  updateConfigFile(loaded.resolved.configFilePath, (raw) => {
+    const overlay = (
+      raw.overlay && typeof raw.overlay === 'object' ? (raw.overlay as Record<string, unknown>) : {}
+    ) as Record<string, unknown>;
+    overlay.visible = visible;
+    raw.overlay = overlay;
+  });
+}
+
 function persistOverlayPosition(x: number, y: number): void {
   if (!loaded) return;
   loaded.resolved.overlayAnchor = 'free';
@@ -195,6 +207,7 @@ function showContextMenu(): void {
       accelerator: r.toggleHotkeyCombo,
       click: () => {
         if (mainWindow) hideOverlay(mainWindow);
+        persistOverlayVisibility(false);
       },
     },
     {
@@ -254,6 +267,7 @@ function wireIPC(): void {
 
   ipcMain.on(IPC_HIDE_OVERLAY, () => {
     if (mainWindow) hideOverlay(mainWindow);
+    persistOverlayVisibility(false);
   });
 
   ipcMain.on(IPC_SHOW_CONTEXT_MENU, () => {
@@ -311,6 +325,7 @@ function wireHotkey(): void {
   hotkey.on('toggle', () => {
     if (!mainWindow) return;
     const visible = toggleOverlayVisibility(mainWindow);
+    persistOverlayVisibility(visible);
     console.log(`[murmur] overlay ${visible ? 'shown' : 'hidden'} via toggle hotkey`);
   });
   hotkey.start();
@@ -499,10 +514,12 @@ async function bootstrap(): Promise<void> {
   tray.create({
     onShow: () => {
       if (mainWindow) showOverlay(mainWindow);
+      persistOverlayVisibility(true);
       tray.setVisibility(true);
     },
     onHide: () => {
       if (mainWindow) hideOverlay(mainWindow);
+      persistOverlayVisibility(false);
       tray.setVisibility(false);
     },
     onPanel: openControlPanelExternal,
@@ -514,7 +531,9 @@ async function bootstrap(): Promise<void> {
   setupPositionPersistence(mainWindow);
 
   mainWindow.once('ready-to-show', () => {
-    mainWindow?.showInactive();
+    if (loaded?.resolved.overlayVisible !== false) {
+      mainWindow?.showInactive();
+    }
     pushInfoToRenderer();
   });
 

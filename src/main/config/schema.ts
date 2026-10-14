@@ -51,6 +51,8 @@ export interface ResolvedConfig {
   overlayOffsetY: number;
   /** Persisted absolute screen position when anchor === 'free'. */
   overlayPosition: OverlayPosition | null;
+  /** Whether the overlay should be visible on startup. */
+  overlayVisible: boolean;
 
   // Prompt engineering
   systemPrompt: string;
@@ -104,6 +106,7 @@ export interface PartialConfig {
     offsetX?: number;
     offsetY?: number;
     position?: OverlayPosition | null;
+    visible?: boolean;
   };
 
   systemPrompt?: string;
@@ -202,6 +205,7 @@ export function sanitizePartial(input: unknown, source: string): PartialConfig {
     if (anchor) out.overlay.anchor = anchor;
     if (isNumber(o.offsetX)) out.overlay.offsetX = o.offsetX;
     if (isNumber(o.offsetY)) out.overlay.offsetY = o.offsetY;
+    if (typeof o.visible === 'boolean') out.overlay.visible = o.visible;
     if (o.position === null) out.overlay.position = null;
     else if (o.position && typeof o.position === 'object') {
       const p = o.position as Record<string, unknown>;
