@@ -62,6 +62,7 @@ export interface PipelineDeps {
   transcribeAudio?: typeof transcribe;
   createRecorder?: () => AudioRecorder;
   createProgressiveInjector?: () => ProgressiveInjector;
+  whisperSupportsStreaming?: boolean;
 }
 
 interface QueuedCapture {
@@ -415,6 +416,7 @@ export class Pipeline {
     const shouldInject = opts.inject ?? true;
     const useProgressive =
       shouldInject && cfg.progressiveInjection && !!this.deps.createProgressiveInjector;
+    const canStreamWhisper = this.deps.whisperSupportsStreaming ?? true;
     const session = existingSession ?? createSession(cfg.logsDir, cfg.logMode);
     const timings: Record<string, number | string> = { provider: provider.config.id };
     const pipelineStart = Date.now();
@@ -435,17 +437,18 @@ export class Pipeline {
       timings.audioBytes = wav.length;
       timings.audioDurationMs = Math.round((pcm.length / 2 / cfg.sampleRate) * 1000);
 
-      this.setStatus('transcribing-streaming');
+      this.setStatus(canStreamWhisper ? 'transcribing-streaming' : 'transcribing');
       const tStart = Date.now();
+      const transcribeOpts = canStreamWhisper
+        ? { onToken: (token: string) => this.emitToken(token, 'transcription') }
+        : undefined;
       const { text: transcription, stderr: whisperStderr } = await this.getTranscribeFn()(
         wavPath,
         {
           cliPath: cfg.whisperCliPath,
           modelPath: cfg.whisperModelPath,
         },
-        {
-          onToken: (token) => this.emitToken(token, 'transcription'),
-        },
+        transcribeOpts,
       );
       timings.transcribeMs = Date.now() - tStart;
       session.writeTranscription(transcription);

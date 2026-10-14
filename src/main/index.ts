@@ -48,6 +48,7 @@ import {
 } from './protocol/index.js';
 import { createProvider, type LlmProvider, PROVIDER_PRESETS } from './providers/index.js';
 import { type TrayIconState, TrayService } from './tray.js';
+import { probeWhisperStreaming } from './whisper-probe.js';
 import { beginWindowDrag, endWindowDrag } from './window-drag.js';
 
 let mainWindow: BrowserWindow | null = null;
@@ -56,6 +57,7 @@ let pipeline: Pipeline | null = null;
 let provider: LlmProvider | null = null;
 let controlPanel: ServerHandle | null = null;
 let mcpServer: McpServerHandle | null = null;
+let whisperStreaming = true;
 const hotkey = new HotkeyService();
 const tray = new TrayService();
 
@@ -346,6 +348,7 @@ function createMainPipeline(): Pipeline {
     inject: pasteAtCursor,
     createRecorder: () => new CommandAudioRecorder({ commandLine: cfg.recorderCommand }),
     createProgressiveInjector: createTypedProgressiveInjector,
+    whisperSupportsStreaming: whisperStreaming,
   });
 }
 
@@ -486,6 +489,10 @@ async function bootstrap(): Promise<void> {
       .then((ms) => console.log(`[murmur] prewarm: ${ms}ms`))
       .catch((err) => console.warn('[murmur] prewarm failed (non-fatal):', err));
   }
+
+  const whisperProbe = await probeWhisperStreaming(loaded.resolved.whisperCliPath);
+  whisperStreaming = whisperProbe.supportsStreaming;
+  console.log(`[murmur] whisper streaming: ${whisperStreaming ? 'supported' : 'not supported'}`);
 
   mainWindow = createOverlayWindow(loaded.resolved);
   tray.create({
