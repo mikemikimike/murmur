@@ -298,6 +298,29 @@ export function loadConfig(opts: LoadConfigOptions): LoadedConfig {
         },
       };
     }
+  } else if (process.platform === 'win32') {
+    // Migration: configs seeded by <=0.6.x on Windows pointed whisper at
+    // <cwd>/bin/whisper (the user's home folder under `npx`), while the
+    // installer puts it in <userData>/bin/whisper. If the configured file is
+    // gone but the installer's copy exists, use that instead.
+    const userDataDir = path.dirname(configFilePath);
+    const installed = {
+      whisperCliPath: path.resolve(userDataDir, DEFAULT_CONFIG.whisperCliPath),
+      whisperModelPath: path.resolve(userDataDir, DEFAULT_CONFIG.whisperModelPath),
+    };
+    const partial = { ...fileLoad.partial };
+    for (const key of ['whisperCliPath', 'whisperModelPath'] as const) {
+      const configured = partial[key];
+      if (
+        configured &&
+        path.isAbsolute(configured) &&
+        !existsSync(configured) &&
+        existsSync(installed[key])
+      ) {
+        partial[key] = installed[key];
+      }
+    }
+    fileLoad = { ...fileLoad, partial };
   }
 
   const sources: MergeSources = {

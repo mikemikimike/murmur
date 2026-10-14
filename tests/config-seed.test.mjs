@@ -59,3 +59,39 @@ describe('loadConfig — first-run seeding', () => {
     });
   });
 });
+
+describe('loadConfig — Windows stale whisper path migration', { skip: !IS_WINDOWS }, () => {
+  it('falls back to the user-data install when the configured binary is gone', () => {
+    inEmptyCwd(({ cwd, userData }) => {
+      const whisperDir = path.join(userData, 'bin', 'whisper');
+      mkdirSync(path.join(whisperDir, 'models'), { recursive: true });
+      writeFileSync(path.join(whisperDir, 'whisper-cli.exe'), '');
+      writeFileSync(path.join(whisperDir, 'models', 'ggml-base.en.bin'), '');
+      writeFileSync(
+        path.join(userData, 'config.json'),
+        JSON.stringify({
+          whisperCliPath: path.join(cwd, 'gone', 'whisper-cli.exe'),
+          whisperModelPath: path.join(cwd, 'gone', 'ggml-base.en.bin'),
+        }),
+      );
+      const loaded = loadConfig({ userDataDir: userData, argv: ['node', 'test'] });
+      assert.equal(loaded.resolved.whisperCliPath, path.join(whisperDir, 'whisper-cli.exe'));
+      assert.equal(
+        loaded.resolved.whisperModelPath,
+        path.join(whisperDir, 'models', 'ggml-base.en.bin'),
+      );
+    });
+  });
+
+  it('leaves a missing path alone when there is no user-data install either', () => {
+    inEmptyCwd(({ cwd, userData }) => {
+      const missing = path.join(cwd, 'gone', 'whisper-cli.exe');
+      writeFileSync(
+        path.join(userData, 'config.json'),
+        JSON.stringify({ whisperCliPath: missing }),
+      );
+      const loaded = loadConfig({ userDataDir: userData, argv: ['node', 'test'] });
+      assert.equal(loaded.resolved.whisperCliPath, missing);
+    });
+  });
+});
