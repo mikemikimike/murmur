@@ -47,6 +47,79 @@ export function stripThink(text: string): string {
   return text.replace(THINK_BLOCK, '').trim();
 }
 
+const THINK_OPEN = '<think>';
+const THINK_CLOSE = '</think>';
+
+export interface ThinkFilter {
+  push(chunk: string): void;
+  /** Emit any held-back text once the stream has ended. */
+  flush(): void;
+}
+
+/**
+ * Streaming counterpart of {@link stripThink}: forwards visible text to
+ * `onToken` while swallowing `<think>…</think>` blocks, even when the tags are
+ * split across chunks. Leading whitespace before the first visible token is
+ * dropped, matching `stripThink`'s trim.
+ *
+ * Without this, reasoning models (qwen3 / DeepSeek-R1 on LM Studio or
+ * llama.cpp) stream their chain of thought into the overlay preview and —
+ * with progressive injection — type it straight into the user's editor.
+ */
+export function createThinkFilter(onToken: (token: string) => void): ThinkFilter {
+  let pending = '';
+  let inThink = false;
+  let started = false;
+
+  const emit = (text: string) => {
+    const out = started ? text : text.trimStart();
+    if (!out) return;
+    started = true;
+    onToken(out);
+  };
+
+  /** Length of the longest suffix of `s` that is a proper prefix of `tag`. */
+  const partialTagLength = (s: string, tag: string) => {
+    for (let n = Math.min(s.length, tag.length - 1); n > 0; n--) {
+      if (tag.startsWith(s.slice(-n))) return n;
+    }
+    return 0;
+  };
+
+  return {
+    push(chunk) {
+      pending += chunk;
+      while (pending) {
+        if (inThink) {
+          const end = pending.indexOf(THINK_CLOSE);
+          if (end < 0) {
+            pending = pending.slice(pending.length - partialTagLength(pending, THINK_CLOSE));
+            return;
+          }
+          pending = pending.slice(end + THINK_CLOSE.length);
+          inThink = false;
+          continue;
+        }
+        const start = pending.indexOf(THINK_OPEN);
+        if (start >= 0) {
+          emit(pending.slice(0, start));
+          pending = pending.slice(start + THINK_OPEN.length);
+          inThink = true;
+          continue;
+        }
+        const hold = partialTagLength(pending, THINK_OPEN);
+        emit(pending.slice(0, pending.length - hold));
+        pending = pending.slice(pending.length - hold);
+        return;
+      }
+    },
+    flush() {
+      if (!inThink) emit(pending);
+      pending = '';
+    },
+  };
+}
+
 export async function parseSseStream(
   body: ReadableStream<Uint8Array>,
   onEvent: (eventType: string, data: string) => void,

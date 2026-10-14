@@ -5,7 +5,7 @@ import type {
   RefineResponse,
   StreamRefineOptions,
 } from './types.js';
-import { parseSseStream, stripThink } from './types.js';
+import { createThinkFilter, parseSseStream, stripThink } from './types.js';
 
 interface AnthropicContentBlock {
   type: 'text' | string;
@@ -31,6 +31,7 @@ interface AnthropicStreamEvent {
   type: string;
   delta?: { type: string; text?: string };
   index?: number;
+  error?: { type?: string; message?: string };
 }
 
 /**
@@ -117,18 +118,28 @@ export class AnthropicProvider implements LlmProvider {
     }
 
     let fullText = '';
+    const visible = createThinkFilter(onToken);
 
     await parseSseStream(res.body, (_eventType, data) => {
+      let event: AnthropicStreamEvent;
       try {
-        const event = JSON.parse(data) as AnthropicStreamEvent;
-        if (event.type === 'content_block_delta' && event.delta?.text) {
-          fullText += event.delta.text;
-          onToken(event.delta.text);
-        }
+        event = JSON.parse(data) as AnthropicStreamEvent;
       } catch {
-        /* skip malformed SSE data lines */
+        return; /* skip malformed SSE data lines */
+      }
+      // e.g. overloaded_error mid-stream; surface it instead of reporting an
+      // "empty refinement".
+      if (event.type === 'error') {
+        throw new Error(
+          `Anthropic stream error: ${event.error?.type ?? 'error'}: ${event.error?.message ?? ''}`,
+        );
+      }
+      if (event.type === 'content_block_delta' && event.delta?.text) {
+        fullText += event.delta.text;
+        visible.push(event.delta.text);
       }
     });
+    visible.flush();
 
     return { text: stripThink(fullText), durationMs: Date.now() - started };
   }

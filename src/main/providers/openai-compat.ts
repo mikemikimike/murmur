@@ -5,7 +5,7 @@ import type {
   RefineResponse,
   StreamRefineOptions,
 } from './types.js';
-import { parseSseStream, stripThink } from './types.js';
+import { createThinkFilter, parseSseStream, stripThink } from './types.js';
 
 interface OpenAiModelsResponse {
   data: { id: string }[];
@@ -23,10 +23,12 @@ interface OpenAiChatResponse {
 }
 
 interface OpenAiStreamDelta {
-  choices: Array<{
+  choices?: Array<{
     delta: { content?: string };
     finish_reason?: string | null;
   }>;
+  /** llama.cpp / vLLM / LM Studio report mid-stream failures this way. */
+  error?: { message?: string };
 }
 
 /**
@@ -111,20 +113,28 @@ export class OpenAiCompatProvider implements LlmProvider {
     }
 
     let fullText = '';
+    const visible = createThinkFilter(onToken);
 
     await parseSseStream(res.body, (_eventType, data) => {
       if (data === '[DONE]') return;
+      let parsed: OpenAiStreamDelta;
       try {
-        const parsed = JSON.parse(data) as OpenAiStreamDelta;
-        const content = parsed.choices[0]?.delta?.content;
-        if (content) {
-          fullText += content;
-          onToken(content);
-        }
+        parsed = JSON.parse(data) as OpenAiStreamDelta;
       } catch {
-        /* skip malformed SSE data lines */
+        return; /* skip malformed SSE data lines */
+      }
+      if (parsed.error) {
+        throw new Error(
+          `${this.config.displayName} stream error: ${parsed.error.message ?? JSON.stringify(parsed.error)}`,
+        );
+      }
+      const content = parsed.choices?.[0]?.delta?.content;
+      if (content) {
+        fullText += content;
+        visible.push(content);
       }
     });
+    visible.flush();
 
     return { text: stripThink(fullText), durationMs: Date.now() - started };
   }
