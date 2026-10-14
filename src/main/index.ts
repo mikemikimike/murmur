@@ -63,6 +63,7 @@ const hotkey = new HotkeyService();
 const tray = new TrayService();
 
 const POSITION_SAVE_DEBOUNCE_MS = 350;
+const PIPELINE_REBUILD_RETRY_MS = 250;
 
 function openControlPanelExternal(): void {
   const url = controlPanel?.url ?? 'http://localhost:7331';
@@ -375,19 +376,37 @@ function createMainPipeline(): Pipeline {
   });
 }
 
+let pipelineRebuildTimer: NodeJS.Timeout | null = null;
+
+/**
+ * Swap in a pipeline built from the current config. While a capture or
+ * refinement is in flight the old pipeline must finish, so retry until idle —
+ * otherwise a panel edit made mid-dictation would never reach the pipeline.
+ */
+function rebuildPipelineWhenIdle(): void {
+  if (!pipeline) return;
+  if (pipeline.isBusy()) {
+    if (!pipelineRebuildTimer) {
+      console.warn('[murmur] config reload deferred: pipeline is busy (recording or processing)');
+      pipelineRebuildTimer = setTimeout(() => {
+        pipelineRebuildTimer = null;
+        rebuildPipelineWhenIdle();
+      }, PIPELINE_REBUILD_RETRY_MS);
+    }
+    return;
+  }
+  const previous = pipeline;
+  pipeline = createMainPipeline();
+  pipeline.inheritFrom(previous);
+}
+
 function reloadConfigAfterExternalUpdate(): void {
   if (!loaded) return;
   const fresh = loadConfig({ userDataDir: app.getPath('userData') });
   loaded.resolved = fresh.resolved;
   loaded.overrides = fresh.overrides;
   provider = createProvider(getProviderConfig(loaded.resolved));
-  if (pipeline) {
-    if (pipeline.isBusy()) {
-      console.warn('[murmur] config reload deferred: pipeline is busy (recording or processing)');
-    } else {
-      pipeline = createMainPipeline();
-    }
-  }
+  rebuildPipelineWhenIdle();
   rebindHotkeys();
   pushInfoToRenderer();
   console.log(

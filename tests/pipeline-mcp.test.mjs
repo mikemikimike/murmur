@@ -390,6 +390,64 @@ describe('Pipeline overlay path', () => {
     assert.equal(transcribed, false);
   });
 
+  it('refineLast uses the currently enabled skills and blocks new captures', async () => {
+    const cfg = makeFakeConfig({ _baseDir: tempBase, enabledSkills: [] });
+    loadSkills(cfg.skillsDir);
+    const refinements = [];
+    let release;
+    const provider = makeFakeProvider(refinements);
+    const pipeline = new Pipeline({
+      cfg,
+      provider,
+      requestRendererStart: () => {
+        throw new Error('capture must not start while refine-last runs');
+      },
+      transcribeAudio: async () => ({ text: 'first take', stderr: '', durationMs: 1 }),
+      inject: async () => {},
+    });
+
+    await pipeline.processPcm(samplePcm(), { inject: false });
+
+    // User enables a skill in the panel, then hits "Refine last".
+    cfg.enabledSkills = ['concise-output'];
+    const gate = new Promise((r) => {
+      release = r;
+    });
+    provider.refineStream = async ({ systemPrompt, userPrompt }) => {
+      refinements.push({ systemPrompt, userPrompt });
+      await gate;
+      return { text: `AGAIN: ${userPrompt}`, durationMs: 1 };
+    };
+    const pending = pipeline.refineLast();
+    await Promise.resolve();
+
+    assert.equal(pipeline.isBusy(), true);
+    pipeline.start(); // ignored while busy
+    release();
+    assert.equal(await pending, 'AGAIN: first take');
+    assert.match(refinements.at(-1).systemPrompt, /### Concise output/);
+    assert.equal(pipeline.isIdle(), true);
+  });
+
+  it('inheritFrom carries refine-last history into a rebuilt pipeline', async () => {
+    const cfg = makeFakeConfig({ _baseDir: tempBase });
+    loadSkills(cfg.skillsDir);
+    const old = new Pipeline({
+      cfg,
+      provider: makeFakeProvider([]),
+      transcribeAudio: async () => ({ text: 'keep me', stderr: '', durationMs: 1 }),
+    });
+    await old.processPcm(samplePcm(), { inject: false });
+
+    const refinements = [];
+    const rebuilt = new Pipeline({ cfg, provider: makeFakeProvider(refinements) });
+    assert.equal(rebuilt.hasLastTranscription(), false);
+    rebuilt.inheritFrom(old);
+    assert.equal(rebuilt.hasLastTranscription(), true);
+    await rebuilt.refineLast();
+    assert.equal(refinements.at(-1).userPrompt, 'keep me');
+  });
+
   it('processPcm() defaults inject to true and emits injecting status', async () => {
     const cfg = makeFakeConfig({ _baseDir: tempBase });
     loadSkills(cfg.skillsDir);

@@ -107,9 +107,20 @@ export class Pipeline {
   private pendingHeadlessReject: ((err: unknown) => void) | null = null;
   private tokenListeners = new Set<(token: string, phase: TokenPhase) => void>();
   private lastTranscription: string | null = null;
-  private lastSkillIds: string[] = [];
 
   constructor(private readonly deps: PipelineDeps) {}
+
+  /**
+   * Carry user-facing history over from a pipeline this one replaces (config
+   * reloads rebuild the pipeline). Without this, saving a skill or prompt
+   * change in the control panel would wipe "Refine last" and "Retry" — exactly
+   * when the user wants to re-run with the new settings.
+   */
+  inheritFrom(prev: Pipeline): void {
+    this.lastTranscription = prev.lastTranscription;
+    this.lastErrorSessionDir = prev.lastErrorSessionDir;
+    this.lastErrorAudioBuffer = prev.lastErrorAudioBuffer;
+  }
 
   addTokenListener(fn: (token: string, phase: TokenPhase) => void): void {
     this.tokenListeners.add(fn);
@@ -349,7 +360,9 @@ export class Pipeline {
     const { cfg, provider } = this.deps;
     const useProgressive = cfg.progressiveInjection && !!this.deps.createProgressiveInjector;
     const skills = loadSkills(cfg.skillsDir);
-    const activeSkillIds = skillIds ?? this.lastSkillIds;
+    // Use the skills enabled *now*: the point of refine-last is re-running the
+    // previous dictation after tweaking skills / the prompt in the panel.
+    const activeSkillIds = this.resolveSkillIds(skillIds);
     const composed = composeSystemPrompt(cfg.systemPrompt, skills, activeSkillIds);
     const session = createSession(cfg.logsDir, cfg.logMode);
     const pipelineStart = Date.now();
@@ -362,9 +375,13 @@ export class Pipeline {
       injector = this.deps.createProgressiveInjector?.() ?? null;
     }
 
+    const transcription = this.lastTranscription;
+    // Mark busy so a hotkey press or MCP call can't start a capture mid-refine.
+    this.cancelIdle();
+    this.state = 'processing';
     try {
       this.setStatus('refining-streaming');
-      session.writeTranscription(this.lastTranscription);
+      session.writeTranscription(transcription);
       session.writeSystemPrompt(composed);
       timings.activeSkills = activeSkillIds.join(',') || '(none)';
 
@@ -372,7 +389,7 @@ export class Pipeline {
       const { text: refined } = await provider.refineStream(
         {
           systemPrompt: composed,
-          userPrompt: this.lastTranscription,
+          userPrompt: transcription,
         },
         {
           onToken: (token) => {
@@ -406,6 +423,7 @@ export class Pipeline {
 
       timings.totalMs = Date.now() - pipelineStart;
       session.writeTimings(timings);
+      this.state = 'idle';
       this.setStatus('done');
       this.scheduleIdle();
       return refined;
@@ -415,6 +433,7 @@ export class Pipeline {
       session.writeError(err);
       timings.totalMs = Date.now() - pipelineStart;
       session.writeTimings(timings);
+      this.state = 'idle';
       this.setStatus('error');
       this.scheduleIdle(2_500);
       throw err;
@@ -477,7 +496,6 @@ export class Pipeline {
       if (!transcription) throw new NoSpeechError();
 
       this.lastTranscription = transcription;
-      this.lastSkillIds = this.resolveSkillIds(opts.skillIds);
 
       this.setStatus('refining-streaming');
       const skills = loadSkills(cfg.skillsDir);

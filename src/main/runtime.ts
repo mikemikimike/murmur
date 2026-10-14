@@ -85,7 +85,9 @@ export async function createRuntime(opts: CreateRuntimeOptions): Promise<Runtime
       return;
     }
 
+    const previous = pipeline;
     pipeline = createHeadlessPipeline(loaded.resolved, provider, whisperStreaming);
+    pipeline.inheritFrom(previous);
     console.log(
       `[murmur] config reloaded: provider=${loaded.resolved.provider} model=${loaded.resolved.model}`,
     );
