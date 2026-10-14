@@ -334,6 +334,7 @@ function createMainPipeline(): Pipeline {
     onStatus: (s) => {
       let iconState: TrayIconState = 'idle';
       if (s === 'recording') iconState = 'recording';
+      else if (s === 'error') iconState = 'error';
       else if (
         s === 'transcribing' ||
         s === 'transcribing-streaming' ||
