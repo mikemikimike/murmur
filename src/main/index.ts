@@ -31,9 +31,18 @@ import {
   printResolvedConfig,
   updateConfigFile,
 } from './config/index.js';
+import {
+  getClipboardHistory,
+  ignoreClipboardText,
+  startClipboardMonitoring,
+  stopClipboardMonitoring,
+} from './context/clipboard.js';
+import { type CapturedContext, captureContext, contextWanted } from './context/index.js';
+import { captureScreenshot } from './context/screenshot.js';
+import { captureActiveWindow } from './context/window.js';
 import { type ServerHandle, startControlPanelServer } from './control-panel/server.js';
 import { HotkeyService } from './hotkey.js';
-import { createTypedProgressiveInjector, pasteAtCursor } from './inject.js';
+import { createTypedProgressiveInjector, type InjectOptions, pasteAtCursor } from './inject.js';
 import { type McpServerHandle, startMcpServer } from './mcp/server.js';
 import {
   createOverlayWindow,
@@ -136,6 +145,27 @@ function pushInfoToRenderer(): void {
     silenceMs: r.vadSilenceMs,
     leadInMs: r.vadLeadInMs,
   } satisfies VadConfigPayload);
+}
+
+/** Clipboard history is only polled when the user opted into sharing it. */
+function syncClipboardMonitoring(): void {
+  if ((loaded?.resolved.clipboardContextEntries ?? 0) > 0) startClipboardMonitoring();
+  else stopClipboardMonitoring();
+}
+
+async function captureContextNow(): Promise<CapturedContext | null> {
+  if (!loaded || !contextWanted(loaded.resolved)) return null;
+  return captureContext(loaded.resolved, {
+    activeWindow: captureActiveWindow,
+    clipboard: getClipboardHistory,
+    screenshot: captureScreenshot,
+  });
+}
+
+async function injectText(text: string, opts: InjectOptions): Promise<void> {
+  // Our own paste must not show up as "clipboard context" next time.
+  ignoreClipboardText(text);
+  await pasteAtCursor(text, opts);
 }
 
 function persistOverlayVisibility(visible: boolean): void {
@@ -388,10 +418,11 @@ function createMainPipeline(): Pipeline {
       }
       tray.setState(iconState);
     },
-    inject: pasteAtCursor,
+    inject: injectText,
     createRecorder: () => new CommandAudioRecorder({ commandLine: cfg.recorderCommand }),
     createProgressiveInjector: createTypedProgressiveInjector,
     whisperSupportsStreaming: whisperStreaming,
+    captureContext: captureContextNow,
   });
 }
 
@@ -427,6 +458,7 @@ function reloadConfigAfterExternalUpdate(): void {
   provider = createProvider(getProviderConfig(loaded.resolved));
   rebuildPipelineWhenIdle();
   rebindHotkeys();
+  syncClipboardMonitoring();
   pushInfoToRenderer();
   console.log(
     `[murmur] config reloaded from control panel: ` +
@@ -588,6 +620,7 @@ async function bootstrap(): Promise<void> {
 
   wireIPC();
   wireHotkey();
+  syncClipboardMonitoring();
   wireScreenChanges();
   wireProtocolEvents(protocolDeps);
   await startPanel();
@@ -614,6 +647,7 @@ if (app.hasSingleInstanceLock()) {
 }
 
 app.on('before-quit', () => {
+  stopClipboardMonitoring();
   hotkey.shutdown();
   tray.destroy();
   controlPanel?.stop().catch(() => undefined);

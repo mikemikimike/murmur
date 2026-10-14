@@ -13,6 +13,12 @@ export interface OverlayPosition {
   y: number;
 }
 
+export interface AppSkillRoute {
+  match: string;
+  enable: string[];
+  disable: string[];
+}
+
 /**
  * The fully-resolved runtime config. Every field is required and absolute
  * (paths are resolved relative to `process.cwd()`).
@@ -50,6 +56,12 @@ export interface ResolvedConfig {
   vadThresholdDb: number;
   vadSilenceMs: number;
   vadLeadInMs: number;
+
+  // Context capture
+  contextCapture: boolean;
+  clipboardContextEntries: number;
+  screenshotContext: boolean;
+  appSkillRoutes: AppSkillRoute[];
 
   // Overlay window
   overlayAnchor: OverlayAnchor;
@@ -111,6 +123,11 @@ export interface PartialConfig {
   vadThresholdDb?: number;
   vadSilenceMs?: number;
   vadLeadInMs?: number;
+
+  contextCapture?: boolean;
+  clipboardContextEntries?: number;
+  screenshotContext?: boolean;
+  appSkillRoutes?: AppSkillRoute[];
 
   overlay?: {
     anchor?: OverlayAnchor;
@@ -217,6 +234,25 @@ export function sanitizePartial(input: unknown, source: string): PartialConfig {
   }
   if (isNumber(obj.vadLeadInMs) && obj.vadLeadInMs > 0) {
     out.vadLeadInMs = Math.floor(obj.vadLeadInMs);
+  }
+
+  if (typeof obj.contextCapture === 'boolean') out.contextCapture = obj.contextCapture;
+  if (isNumber(obj.clipboardContextEntries) && obj.clipboardContextEntries >= 0) {
+    out.clipboardContextEntries = Math.min(Math.floor(obj.clipboardContextEntries), 5);
+  }
+  if (typeof obj.screenshotContext === 'boolean') out.screenshotContext = obj.screenshotContext;
+  if (Array.isArray(obj.appSkillRoutes)) {
+    out.appSkillRoutes = obj.appSkillRoutes.filter((route): route is AppSkillRoute => {
+      if (!route || typeof route !== 'object') return false;
+      const r = route as Record<string, unknown>;
+      return (
+        isString(r.match) &&
+        Array.isArray(r.enable) &&
+        r.enable.every((s) => isString(s) && SKILL_ID_RE.test(s)) &&
+        Array.isArray(r.disable) &&
+        r.disable.every((s) => isString(s) && SKILL_ID_RE.test(s))
+      );
+    });
   }
 
   const overlay = obj.overlay;

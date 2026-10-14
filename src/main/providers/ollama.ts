@@ -20,13 +20,14 @@ interface OllamaGenerateResponse {
 export class OllamaProvider implements LlmProvider {
   constructor(public readonly config: ProviderConfig) {}
 
-  async refine({ systemPrompt, userPrompt }: RefineRequest): Promise<RefineResponse> {
+  async refine({ systemPrompt, userPrompt, images }: RefineRequest): Promise<RefineResponse> {
     const started = Date.now();
 
     const body = {
       model: this.config.model,
       system: systemPrompt,
       prompt: userPrompt,
+      ...(images?.length ? { images: images.map((img) => img.base64) } : {}),
       stream: false,
       think: false,
       options: {
@@ -51,7 +52,7 @@ export class OllamaProvider implements LlmProvider {
   }
 
   async refineStream(
-    { systemPrompt, userPrompt }: RefineRequest,
+    { systemPrompt, userPrompt, images }: RefineRequest,
     { onToken }: StreamRefineOptions,
   ): Promise<RefineResponse> {
     const started = Date.now();
@@ -60,6 +61,7 @@ export class OllamaProvider implements LlmProvider {
       model: this.config.model,
       system: systemPrompt,
       prompt: userPrompt,
+      ...(images?.length ? { images: images.map((img) => img.base64) } : {}),
       stream: true,
       think: false,
       options: {

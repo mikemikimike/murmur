@@ -59,6 +59,11 @@ export const DEFAULT_CONFIG: Required<Omit<PartialConfig, 'apiKey' | 'overlay'>>
   vadSilenceMs: 900,
   vadLeadInMs: 300,
 
+  contextCapture: false,
+  clipboardContextEntries: 0,
+  screenshotContext: false,
+  appSkillRoutes: [],
+
   overlay: {
     anchor: 'bottom-center',
     offsetX: 0,

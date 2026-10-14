@@ -9,9 +9,18 @@ export interface ProviderConfig {
   temperature: number;
 }
 
+/** Screenshot attached to a refine request. */
+export interface ImageAttachment {
+  /** Raw base64, no `data:` prefix. */
+  base64: string;
+  mimeType: string;
+}
+
 export interface RefineRequest {
   systemPrompt: string;
   userPrompt: string;
+  /** Optional screenshots for vision-capable models (opt-in `screenshotContext`). */
+  images?: ImageAttachment[];
 }
 
 export interface RefineResponse {

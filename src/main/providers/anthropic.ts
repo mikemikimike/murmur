@@ -58,15 +58,28 @@ export class AnthropicProvider implements LlmProvider {
     };
   }
 
-  async refine({ systemPrompt, userPrompt }: RefineRequest): Promise<RefineResponse> {
+  private messages({ userPrompt, images }: RefineRequest): unknown[] {
+    const content = images?.length
+      ? [
+          ...images.map((img) => ({
+            type: 'image',
+            source: { type: 'base64', media_type: img.mimeType, data: img.base64 },
+          })),
+          { type: 'text', text: userPrompt },
+        ]
+      : userPrompt;
+    return [{ role: 'user', content }];
+  }
+
+  async refine(req: RefineRequest): Promise<RefineResponse> {
     const started = Date.now();
 
     const body = {
       model: this.config.model,
       max_tokens: 1024,
       temperature: this.config.temperature,
-      system: systemPrompt,
-      messages: [{ role: 'user', content: userPrompt }],
+      system: req.systemPrompt,
+      messages: this.messages(req),
     };
 
     const res = await fetch(`${this.config.baseUrl}/messages`, {
@@ -87,7 +100,7 @@ export class AnthropicProvider implements LlmProvider {
   }
 
   async refineStream(
-    { systemPrompt, userPrompt }: RefineRequest,
+    req: RefineRequest,
     { onToken }: StreamRefineOptions,
   ): Promise<RefineResponse> {
     const started = Date.now();
@@ -96,9 +109,9 @@ export class AnthropicProvider implements LlmProvider {
       model: this.config.model,
       max_tokens: 1024,
       temperature: this.config.temperature,
-      system: systemPrompt,
+      system: req.systemPrompt,
       stream: true,
-      messages: [{ role: 'user', content: userPrompt }],
+      messages: this.messages(req),
     };
 
     const res = await fetch(`${this.config.baseUrl}/messages`, {

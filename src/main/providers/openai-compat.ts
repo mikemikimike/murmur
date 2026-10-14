@@ -50,17 +50,30 @@ export class OpenAiCompatProvider implements LlmProvider {
     return h;
   }
 
-  async refine({ systemPrompt, userPrompt }: RefineRequest): Promise<RefineResponse> {
+  private messages({ systemPrompt, userPrompt, images }: RefineRequest): unknown[] {
+    const user = images?.length
+      ? [
+          { type: 'text', text: userPrompt },
+          ...images.map((img) => ({
+            type: 'image_url',
+            image_url: { url: `data:${img.mimeType};base64,${img.base64}` },
+          })),
+        ]
+      : userPrompt;
+    return [
+      { role: 'system', content: systemPrompt },
+      { role: 'user', content: user },
+    ];
+  }
+
+  async refine(req: RefineRequest): Promise<RefineResponse> {
     const started = Date.now();
 
     const body = {
       model: this.config.model,
       stream: false,
       temperature: this.config.temperature,
-      messages: [
-        { role: 'system', content: systemPrompt },
-        { role: 'user', content: userPrompt },
-      ],
+      messages: this.messages(req),
     };
 
     const res = await fetch(`${this.config.baseUrl}/chat/completions`, {
@@ -81,7 +94,7 @@ export class OpenAiCompatProvider implements LlmProvider {
   }
 
   async refineStream(
-    { systemPrompt, userPrompt }: RefineRequest,
+    req: RefineRequest,
     { onToken }: StreamRefineOptions,
   ): Promise<RefineResponse> {
     const started = Date.now();
@@ -90,10 +103,7 @@ export class OpenAiCompatProvider implements LlmProvider {
       model: this.config.model,
       stream: true,
       temperature: this.config.temperature,
-      messages: [
-        { role: 'system', content: systemPrompt },
-        { role: 'user', content: userPrompt },
-      ],
+      messages: this.messages(req),
     };
 
     const res = await fetch(`${this.config.baseUrl}/chat/completions`, {

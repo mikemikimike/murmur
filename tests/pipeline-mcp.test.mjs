@@ -510,6 +510,67 @@ describe('Pipeline overlay path', () => {
     assert.deepEqual(starts, [false]);
   });
 
+  it('feeds captured context, routed skills and images to the provider; refine-last reuses it', async () => {
+    const cfg = makeFakeConfig({
+      _baseDir: tempBase,
+      enabledSkills: [],
+      appSkillRoutes: [{ match: 'code', enable: ['code-context'], disable: [] }],
+    });
+    loadSkills(cfg.skillsDir);
+    const requests = [];
+    const provider = makeFakeProvider([]);
+    provider.refineStream = async (req) => {
+      requests.push(req);
+      return { text: 'ok', durationMs: 1 };
+    };
+    let captures = 0;
+    const pipeline = new Pipeline({
+      cfg,
+      provider,
+      requestRendererStart: () => {},
+      transcribeAudio: async () => ({ text: 'fix it', stderr: '', durationMs: 1 }),
+      inject: async () => {},
+      captureContext: async () => {
+        captures++;
+        return {
+          window: { processName: 'Code', windowTitle: 'app.ts', os: 'Windows' },
+          block: '<!-- context: app=Code -->',
+          images: [{ base64: 'AAAA', mimeType: 'image/jpeg' }],
+        };
+      },
+    });
+
+    pipeline.start();
+    await pipeline.handleAudioChunk(samplePcm());
+    assert.equal(captures, 1);
+    assert.match(requests[0].systemPrompt, /### Code context/);
+    assert.match(requests[0].systemPrompt, /## Context[\s\S]*app=Code/);
+    assert.deepEqual(requests[0].images, [{ base64: 'AAAA', mimeType: 'image/jpeg' }]);
+
+    await pipeline.refineLast();
+    assert.equal(captures, 1, 'refine-last reuses the original context');
+    assert.match(requests[1].systemPrompt, /app=Code/);
+  });
+
+  it('a failing context capture does not break the dictation', async () => {
+    const cfg = makeFakeConfig({ _baseDir: tempBase });
+    loadSkills(cfg.skillsDir);
+    const injections = [];
+    const pipeline = new Pipeline({
+      cfg,
+      provider: makeFakeProvider([]),
+      requestRendererStart: () => {},
+      transcribeAudio: async () => ({ text: 'still works', stderr: '', durationMs: 1 }),
+      inject: async (t) => injections.push(t),
+      captureContext: async () => {
+        throw new Error('no accessibility permission');
+      },
+    });
+    pipeline.start();
+    await pipeline.handleAudioChunk(samplePcm());
+    assert.deepEqual(injections, ['REFINED: still works']);
+  });
+
   it('processPcm() defaults inject to true and emits injecting status', async () => {
     const cfg = makeFakeConfig({ _baseDir: tempBase });
     loadSkills(cfg.skillsDir);

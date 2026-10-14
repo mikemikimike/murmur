@@ -17,6 +17,7 @@ export { HELP_TEXT } from './cli.js';
 export { DEFAULT_CONFIG, DEFAULT_SYSTEM_PROMPT } from './defaults.js';
 export { updateConfigFile } from './file.js';
 export type {
+  AppSkillRoute,
   ClipboardRetention,
   InjectionMethod,
   LogMode,
@@ -105,6 +106,20 @@ function readEnv(): PartialConfig {
   if (e.MURMUR_VAD_LEAD_IN_MS) {
     const n = Number(e.MURMUR_VAD_LEAD_IN_MS);
     if (Number.isFinite(n) && n > 0) partial.vadLeadInMs = n;
+  }
+  if (e.MURMUR_CONTEXT_CAPTURE === 'true' || e.MURMUR_CONTEXT_CAPTURE === '1') {
+    partial.contextCapture = true;
+  } else if (e.MURMUR_CONTEXT_CAPTURE === 'false' || e.MURMUR_CONTEXT_CAPTURE === '0') {
+    partial.contextCapture = false;
+  }
+  if (e.MURMUR_CLIPBOARD_CONTEXT_ENTRIES) {
+    const n = Number(e.MURMUR_CLIPBOARD_CONTEXT_ENTRIES);
+    if (Number.isFinite(n) && n >= 0) partial.clipboardContextEntries = Math.min(n, 5);
+  }
+  if (e.MURMUR_SCREENSHOT_CONTEXT === 'true' || e.MURMUR_SCREENSHOT_CONTEXT === '1') {
+    partial.screenshotContext = true;
+  } else if (e.MURMUR_SCREENSHOT_CONTEXT === 'false' || e.MURMUR_SCREENSHOT_CONTEXT === '0') {
+    partial.screenshotContext = false;
   }
   if (e.MURMUR_LOGS_DIR) partial.logsDir = e.MURMUR_LOGS_DIR;
   if (e.MURMUR_LOG_MODE === 'metadata-only' || e.MURMUR_LOG_MODE === 'full') {
@@ -417,6 +432,31 @@ export function loadConfig(opts: LoadConfigOptions): LoadedConfig {
     pickFirst(sources.cli.vadLeadInMs, sources.file.vadLeadInMs, sources.env.vadLeadInMs) ??
     DEFAULT_CONFIG.vadLeadInMs;
 
+  const contextCapture =
+    pickFirst(
+      sources.cli.contextCapture,
+      sources.file.contextCapture,
+      sources.env.contextCapture,
+    ) ?? DEFAULT_CONFIG.contextCapture;
+  const clipboardContextEntries =
+    pickFirst(
+      sources.cli.clipboardContextEntries,
+      sources.file.clipboardContextEntries,
+      sources.env.clipboardContextEntries,
+    ) ?? DEFAULT_CONFIG.clipboardContextEntries;
+  const screenshotContext =
+    pickFirst(
+      sources.cli.screenshotContext,
+      sources.file.screenshotContext,
+      sources.env.screenshotContext,
+    ) ?? DEFAULT_CONFIG.screenshotContext;
+  const appSkillRoutes =
+    pickFirst(
+      sources.cli.appSkillRoutes,
+      sources.file.appSkillRoutes,
+      sources.env.appSkillRoutes,
+    ) ?? DEFAULT_CONFIG.appSkillRoutes;
+
   const overlay = mergeOverlay(sources);
 
   const systemPrompt =
@@ -470,6 +510,10 @@ export function loadConfig(opts: LoadConfigOptions): LoadedConfig {
     vadThresholdDb,
     vadSilenceMs,
     vadLeadInMs,
+    contextCapture,
+    clipboardContextEntries,
+    screenshotContext,
+    appSkillRoutes,
     overlayAnchor: overlay.anchor,
     overlayOffsetX: overlay.offsetX,
     overlayOffsetY: overlay.offsetY,
@@ -535,6 +579,10 @@ function computeValueSources(sources: MergeSources): ConfigValueSources {
     'vadThresholdDb',
     'vadSilenceMs',
     'vadLeadInMs',
+    'contextCapture',
+    'clipboardContextEntries',
+    'screenshotContext',
+    'appSkillRoutes',
     'logMode',
     'systemPrompt',
     'enabledSkills',
@@ -579,6 +627,10 @@ function computeOverrides(sources: MergeSources): ConfigOverrides {
     'vadThresholdDb',
     'vadSilenceMs',
     'vadLeadInMs',
+    'contextCapture',
+    'clipboardContextEntries',
+    'screenshotContext',
+    'appSkillRoutes',
     'logMode',
     'systemPrompt',
     'enabledSkills',

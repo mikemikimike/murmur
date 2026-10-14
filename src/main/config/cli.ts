@@ -125,6 +125,20 @@ export function parseCli(argv: readonly string[]): CliResult {
     const n = Number(raw['vad-lead-in']);
     if (Number.isFinite(n)) candidate.vadLeadInMs = n;
   }
+  if (raw['context'] === true || raw['context'] === 'true') {
+    candidate.contextCapture = true;
+  } else if (raw['context'] === 'false') {
+    candidate.contextCapture = false;
+  }
+  if (typeof raw['clipboard-entries'] === 'string') {
+    const n = Number(raw['clipboard-entries']);
+    if (Number.isFinite(n)) candidate.clipboardContextEntries = n;
+  }
+  if (raw['screenshot'] === true || raw['screenshot'] === 'true') {
+    candidate.screenshotContext = true;
+  } else if (raw['screenshot'] === 'false') {
+    candidate.screenshotContext = false;
+  }
   if (typeof raw['logs-dir'] === 'string') candidate.logsDir = raw['logs-dir'];
   if (typeof raw['log-mode'] === 'string') candidate.logMode = raw['log-mode'];
   if (typeof raw['skills-dir'] === 'string') candidate.skillsDir = raw['skills-dir'];
@@ -208,6 +222,12 @@ Voice Activity Detection (VAD):
   --vad-threshold <db>                Speech threshold in dBFS (default: -40; try -50 for quiet mics)
   --vad-silence <ms>                  Pause that ends a click-to-record capture (default: 900)
   --vad-lead-in <ms>                  Audio kept before the first speech (default: 300)
+
+Context capture (sent to your LLM provider):
+  --context                           Share the active app + window title
+  --clipboard-entries <n>             Share the last N clipboard entries (0-5, default: 0)
+  --screenshot                        Attach a screenshot (vision-capable models only)
+  (appSkillRoutes in config.json enables/disables skills per active app)
 
 Overlay window:
   --overlay-anchor <bottom-center|bottom-right|top-right|free>
