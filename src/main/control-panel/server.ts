@@ -144,6 +144,7 @@ function publicConfig(cfg: ResolvedConfig): Record<string, unknown> {
     controlPanelPort: cfg.controlPanelPort,
     mcpPort: cfg.mcpPort,
     recorderCommand: cfg.recorderCommand,
+    logMode: cfg.logMode,
     logsDir: cfg.logsDir,
     skillsDir: cfg.skillsDir,
     configFilePath: cfg.configFilePath,
@@ -375,6 +376,7 @@ function mergePatchIntoRaw(raw: Record<string, unknown>, patch: PartialConfig): 
     'controlPanelPort',
     'mcpPort',
     'recorderCommand',
+    'logMode',
     'logsDir',
     'skillsDir',
   ];
