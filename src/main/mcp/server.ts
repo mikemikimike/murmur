@@ -6,6 +6,7 @@ import { z } from 'zod';
 import type { TokenPhase } from '../../shared/ipc.js';
 import { updateConfigFile as defaultUpdateConfigFile } from '../config/file.js';
 import type { ResolvedConfig } from '../config/index.js';
+import { hasLoopbackHost, hasLoopbackOriginOrNone } from '../http-guard.js';
 import type { Pipeline, ProcessPcmResult } from '../pipeline.js';
 import { isValidSkillId, loadSkills } from '../skills.js';
 
@@ -343,6 +344,13 @@ async function handleMcpHttpRequest(
 
 export async function startMcpServer(deps: StartMcpServerDeps): Promise<McpServerHandle> {
   const httpServer: Server = createServer(async (req, res) => {
+    // murmur_record turns on the microphone; never let a web page reach it via
+    // DNS rebinding or a cross-site request (MCP spec: servers MUST validate
+    // Origin on local HTTP transports).
+    if (!hasLoopbackHost(req) || !hasLoopbackOriginOrNone(req)) {
+      sendJson(res, 403, { error: 'forbidden host or origin' });
+      return;
+    }
     const pathname = (req.url ?? '/').split('?')[0];
     if (pathname !== '/mcp') {
       sendJson(res, 404, { error: 'not found' });

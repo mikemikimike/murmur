@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync } from 'node:fs';
+import { request as httpRequest } from 'node:http';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, it } from 'node:test';
@@ -135,6 +136,39 @@ describe('control-panel server', () => {
       headers: { Origin: 'https://evil.example' },
     });
     assert.equal(crossOrigin.status, 403);
+  });
+
+  it('refuses DNS-rebound requests so the control token cannot leak', async () => {
+    const cfg = makeFakeConfig({ skillsDir: tempDir });
+    handle = await startControlPanelServer({
+      getCurrentConfig: () => cfg,
+      onConfigUpdated: () => {},
+      testLlm: async () => ({ ok: true, message: 'mocked' }),
+    });
+
+    // Same-origin GET from a rebound page: no Origin header, attacker's Host.
+    const get = (host) =>
+      new Promise((resolve, reject) => {
+        const req = httpRequest(
+          { host: '127.0.0.1', port: handle.port, path: '/api/state', headers: { Host: host } },
+          (res) => {
+            let body = '';
+            res.on('data', (c) => {
+              body += c;
+            });
+            res.on('end', () => resolve({ status: res.statusCode, body }));
+          },
+        );
+        req.on('error', reject);
+        req.end();
+      });
+
+    const rebound = await get(`evil.example:${handle.port}`);
+    assert.equal(rebound.status, 403);
+    assert.doesNotMatch(rebound.body, /csrfToken/);
+
+    const local = await get(`127.0.0.1:${handle.port}`);
+    assert.equal(local.status, 200);
   });
 
   it('requires the per-session token for state-changing API calls', async () => {

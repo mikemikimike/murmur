@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { request as httpRequest } from 'node:http';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, it } from 'node:test';
@@ -374,6 +375,33 @@ describe('Murmur MCP tool handlers', () => {
   });
 });
 
+/** POST an MCP initialize with explicit headers (fetch won't let us set Host). */
+function rawPost(port, headers) {
+  const body = JSON.stringify({ jsonrpc: '2.0', method: 'initialize', id: 1, params: {} });
+  return new Promise((resolve, reject) => {
+    const req = httpRequest(
+      {
+        host: '127.0.0.1',
+        port,
+        path: '/mcp',
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Accept: 'application/json, text/event-stream',
+          'Content-Length': Buffer.byteLength(body),
+          ...headers,
+        },
+      },
+      (res) => {
+        res.resume();
+        res.on('end', () => resolve({ status: res.statusCode }));
+      },
+    );
+    req.on('error', reject);
+    req.end(body);
+  });
+}
+
 describe('startMcpServer HTTP', () => {
   let handle;
   let httpDir;
@@ -413,6 +441,36 @@ describe('startMcpServer HTTP', () => {
     assert.equal(res.status, 404);
     const body = await res.json();
     assert.deepEqual(body, { error: 'not found' });
+  });
+
+  it('rejects DNS-rebinding Hosts and cross-site Origins before reaching MCP', async () => {
+    httpDir = mkdtempSync(path.join(tmpdir(), 'murmur-mcp-http-'));
+    let created = 0;
+    handle = await startMcpServer({
+      cfg: { ...cfg(httpDir), mcpPort: 0 },
+      getConfig: () => cfg(httpDir),
+      getPipeline: () => idlePipeline(),
+      onConfigUpdated: () => {},
+      onMcpServerCreated: () => {
+        created += 1;
+      },
+    });
+
+    const rebound = await rawPost(handle.port, { Host: `evil.example:${handle.port}` });
+    assert.equal(rebound.status, 403);
+    const crossSite = await rawPost(handle.port, {
+      Host: `127.0.0.1:${handle.port}`,
+      Origin: 'https://evil.example',
+    });
+    assert.equal(crossSite.status, 403);
+    assert.equal(created, 0);
+
+    const local = await rawPost(handle.port, {
+      Host: `localhost:${handle.port}`,
+      Origin: 'http://localhost:6274', // e.g. MCP Inspector
+    });
+    assert.notEqual(local.status, 403);
+    assert.equal(created, 1);
   });
 
   it('creates a fresh MCP server per HTTP request', async () => {
