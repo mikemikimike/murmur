@@ -39,6 +39,7 @@ import {
   toggleOverlayVisibility,
 } from './overlay/window.js';
 import { Pipeline } from './pipeline.js';
+import { isPathInside } from './platform.js';
 import { runPreflight } from './preflight.js';
 import {
   findMurmurUrlInArgv,
@@ -303,7 +304,13 @@ function wireIPC(): void {
     });
   });
 
-  ipcMain.on(IPC_OPEN_LOG_DIR, (_evt, dir: string) => {
+  ipcMain.on(IPC_OPEN_LOG_DIR, (_evt, dir: unknown) => {
+    // shell.openPath launches whatever it is given (including executables), so
+    // only honour session folders inside the configured logs dir.
+    if (!loaded || typeof dir !== 'string' || !isPathInside(dir, loaded.resolved.logsDir)) {
+      console.warn('[main] refused to open path outside the logs dir:', dir);
+      return;
+    }
     shell.openPath(dir).catch((err) => {
       console.error('[main] openPath failed:', err);
     });
