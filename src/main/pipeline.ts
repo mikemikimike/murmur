@@ -107,6 +107,8 @@ export class Pipeline {
   private pendingHeadlessReject: ((err: unknown) => void) | null = null;
   private tokenListeners = new Set<(token: string, phase: TokenPhase) => void>();
   private lastTranscription: string | null = null;
+  private currentStatus: Status = 'idle';
+  private statusBeforeQueueFull: Status = 'idle';
 
   constructor(private readonly deps: PipelineDeps) {}
 
@@ -161,6 +163,7 @@ export class Pipeline {
   }
 
   private setStatus(s: Status): void {
+    this.currentStatus = s;
     this.deps.getWindow?.()?.webContents.send(IPC_STATUS, s);
     this.deps.emitStatus?.(s);
     this.deps.onStatus?.(s);
@@ -208,8 +211,14 @@ export class Pipeline {
     const max = this.deps.cfg.queueMaxDepth;
     if (this.audioQueue.length >= max) {
       this.audioQueue.shift();
+      // Flash "queue full", then restore whatever phase we were in — unless the
+      // pipeline has moved on meanwhile (otherwise an idle overlay would get
+      // stuck showing a stale "Transcribing…").
+      if (this.currentStatus !== 'queue-full') this.statusBeforeQueueFull = this.currentStatus;
       this.setStatus('queue-full');
-      setTimeout(() => this.setStatus('transcribing'), 1_500);
+      setTimeout(() => {
+        if (this.currentStatus === 'queue-full') this.setStatus(this.statusBeforeQueueFull);
+      }, 1_500);
     }
     this.audioQueue.push(item);
     this.sendQueueDepth();
