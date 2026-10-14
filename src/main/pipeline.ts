@@ -287,15 +287,25 @@ export class Pipeline {
       if (this.backgroundSession === null) {
         this.backgroundSession = createSession(this.deps.cfg.logsDir, this.deps.cfg.logMode);
         this.requestRendererStart();
-        this.backgroundAudioTimeout = setTimeout(() => {
-          console.warn('[pipeline] background recording timed out, discarding');
-          this.backgroundSession = null;
-          this.backgroundAudioTimeout = null;
-        }, AUDIO_TIMEOUT_MS);
       } else {
-        this.requestRendererStop();
+        this.stopBackgroundCapture();
       }
     }
+  }
+
+  /**
+   * End a capture queued behind an in-flight one. The "no audio arrived"
+   * timeout starts here, at stop — starting it when the capture began
+   * discarded any queued dictation longer than 10 s.
+   */
+  private stopBackgroundCapture(): void {
+    if (this.backgroundAudioTimeout) return; // already stopping
+    this.requestRendererStop();
+    this.backgroundAudioTimeout = setTimeout(() => {
+      console.warn('[pipeline] background recording produced no audio, discarding');
+      this.backgroundSession = null;
+      this.backgroundAudioTimeout = null;
+    }, AUDIO_TIMEOUT_MS);
   }
 
   private reset(): void {
