@@ -249,7 +249,7 @@ window.murmur.onToken((payload: TokenPayload) => {
   }
 });
 
-let vadConfig: VadConfig = { enabled: false, thresholdDb: -40, silenceMs: 900, leadInMs: 300 };
+let vadConfig: VadConfig = { enabled: false, thresholdDb: -40, silenceMs: 1500, leadInMs: 300 };
 let autoStop = false;
 
 window.murmur.onVadConfig((cfg) => {

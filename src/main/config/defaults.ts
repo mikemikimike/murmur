@@ -56,7 +56,8 @@ export const DEFAULT_CONFIG: Required<Omit<PartialConfig, 'apiKey' | 'overlay'>>
 
   vadEnabled: true,
   vadThresholdDb: -40,
-  vadSilenceMs: 900,
+  // 900 ms cut people off during ordinary thinking pauses.
+  vadSilenceMs: 1500,
   vadLeadInMs: 300,
 
   contextCapture: false,

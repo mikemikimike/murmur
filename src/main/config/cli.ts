@@ -220,7 +220,7 @@ Voice Activity Detection (VAD):
                                       auto-stops after a pause, leading silence is trimmed,
                                       and captures without speech are dropped
   --vad-threshold <db>                Speech threshold in dBFS (default: -40; try -50 for quiet mics)
-  --vad-silence <ms>                  Pause that ends a click-to-record capture (default: 900)
+  --vad-silence <ms>                  Pause that ends a click-to-record capture (default: 1500)
   --vad-lead-in <ms>                  Audio kept before the first speech (default: 300)
 
 Context capture (sent to your LLM provider):

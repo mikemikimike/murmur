@@ -39,22 +39,50 @@ export function dbToLinear(db: number): number {
   return 10 ** (db / 20);
 }
 
+/**
+ * Once speech has started, quieter audio still counts as speech down to this
+ * many dB below the start threshold. Soft syllables and trailing-off words sit
+ * 5-15 dB under a speaker's peaks; with a single threshold, a quiet mic
+ * (peaks around -31 dBFS) auto-stopped mid-sentence.
+ */
+const HYSTERESIS_DB = 12;
+/** …but never closer than this to the measured background noise. */
+const FLOOR_MARGIN_DB = 6;
+/** Time constant for the noise-floor energy smoothing. */
+const FLOOR_SMOOTHING_MS = 100;
+
 export function createVadMonitor(config: VadConfig, callbacks: VadCallbacks): VadMonitor {
-  const threshold = dbToLinear(config.thresholdDb);
+  const startThreshold = dbToLinear(config.thresholdDb);
+  const hysteresisThreshold = dbToLinear(config.thresholdDb - HYSTERESIS_DB);
   let state: VadState = 'listening';
   let elapsedMs = 0;
   let silenceMs = 0;
   let speechStartMs: number | null = null;
+  // Running minimum of smoothed signal level ≈ the room's noise floor.
+  let smoothedPower: number | null = null;
+  let floorRms = Number.POSITIVE_INFINITY;
+
+  /**
+   * "Still speaking" bar: well below the start threshold, but lifted above a
+   * noisy room's floor so a fan or hum never counts as speech forever.
+   */
+  const continueThreshold = () =>
+    Math.min(startThreshold, Math.max(hysteresisThreshold, floorRms * dbToLinear(FLOOR_MARGIN_DB)));
 
   return {
     update(rms, chunkMs) {
       const chunkStart = elapsedMs;
       elapsedMs += chunkMs;
       if (!config.enabled || state === 'done') return;
-      const loud = rms > threshold;
+
+      const power = rms * rms;
+      const alpha = chunkMs / (FLOOR_SMOOTHING_MS + chunkMs);
+      smoothedPower =
+        smoothedPower === null ? power : smoothedPower + alpha * (power - smoothedPower);
+      floorRms = Math.min(floorRms, Math.sqrt(smoothedPower));
 
       if (state === 'listening') {
-        if (loud) {
+        if (rms > startThreshold) {
           state = 'speaking';
           speechStartMs = chunkStart;
           callbacks.onSpeechStart();
@@ -62,7 +90,7 @@ export function createVadMonitor(config: VadConfig, callbacks: VadCallbacks): Va
         return;
       }
 
-      if (loud) {
+      if (rms > continueThreshold()) {
         state = 'speaking';
         silenceMs = 0;
         return;
@@ -79,6 +107,8 @@ export function createVadMonitor(config: VadConfig, callbacks: VadCallbacks): Va
       elapsedMs = 0;
       silenceMs = 0;
       speechStartMs = null;
+      smoothedPower = null;
+      floorRms = Number.POSITIVE_INFINITY;
     },
     getState: () => state,
     getKeepFromMs() {
