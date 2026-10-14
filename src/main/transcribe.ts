@@ -13,6 +13,16 @@ export interface TranscribeOptions {
 
 const DEFAULT_TIMEOUT_MS = 5 * 60_000;
 
+/**
+ * whisper-cli defaults to 4 threads. Measured on a 20-thread CPU with
+ * ggml-base.en (15 s dictation): 4 → 1.88 s, 8 → 1.42 s, 12 → 1.21 s,
+ * 16 → 1.20 s. Half the logical cores (≈ physical cores on SMT CPUs) captures
+ * most of the gain without oversubscribing; small machines keep the default.
+ */
+export function whisperThreadCount(logicalCores = os.availableParallelism()): number {
+  return Math.min(16, Math.max(4, Math.floor(logicalCores / 2)));
+}
+
 // whisper.cpp annotates non-speech segments instead of returning nothing:
 // "[BLANK_AUDIO]", "[ Silence ]", "(upbeat music)", "(coughs)" … Strip them so
 // silence never reaches the LLM (which would happily "refine" the tag).
@@ -70,7 +80,18 @@ export async function transcribe(
   // sibling `transcription.txt` would be silently overwritten.
   const outDir = await mkdtemp(path.join(os.tmpdir(), 'murmur-whisper-'));
   const outPrefix = path.join(outDir, 'transcription');
-  const args = ['-m', opts.modelPath, '-f', wavPath, '-otxt', '-of', outPrefix, '--print-progress'];
+  const args = [
+    '-m',
+    opts.modelPath,
+    '-f',
+    wavPath,
+    '-t',
+    String(whisperThreadCount()),
+    '-otxt',
+    '-of',
+    outPrefix,
+    '--print-progress',
+  ];
   const timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
 
   const started = Date.now();
