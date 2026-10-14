@@ -9,6 +9,7 @@ import {
   renameSync,
   rmSync,
 } from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import process from 'node:process';
 import { fileURLToPath } from 'node:url';
@@ -204,8 +205,11 @@ async function installWhisperUnix(ctx: SetupContext): Promise<WhisperInstallResu
 
   // 3. Configure + build
   console.log(pc.dim('    [2/3] cmake configure + build (this is the slow part)...'));
-  const nproc = process.env.NPROC || (process.platform === 'darwin' ? '4' : '');
-  const configure = spawnSync('cmake', ['-B', 'build'], { cwd: buildRoot, stdio: 'inherit' });
+  const nproc = process.env.NPROC || String(os.availableParallelism());
+  const configure = spawnSync('cmake', ['-B', 'build', '-DCMAKE_BUILD_TYPE=Release'], {
+    cwd: buildRoot,
+    stdio: 'inherit',
+  });
   if (configure.status !== 0) {
     console.error(pc.red('    x cmake configure failed'));
     return null;
@@ -267,6 +271,11 @@ async function installWhisperWindows(ctx: SetupContext): Promise<WhisperInstallR
   );
   if (res.status !== 0) {
     console.error(pc.red('    x setup-whisper.ps1 exited with an error'));
+    console.log(
+      pc.dim(
+        `    Manual install: extract whisper-bin-x64.zip from https://github.com/ggml-org/whisper.cpp/releases into ${path.join(ctx.userDataDir, 'bin', 'whisper')}`,
+      ),
+    );
     return null;
   }
   const binaryPath = path.join(ctx.userDataDir, 'bin', 'whisper', 'whisper-cli.exe');

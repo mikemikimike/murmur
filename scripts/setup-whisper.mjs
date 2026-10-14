@@ -88,17 +88,15 @@ async function setupUnix() {
     console.log('    brew install whisper-cpp');
     console.log('');
     console.log('    # or build from source:');
-    console.log('    git clone https://github.com/ggerganov/whisper.cpp');
-    console.log('    cd whisper.cpp && make && sudo cp main /usr/local/bin/whisper-cli');
+    console.log('    git clone https://github.com/ggml-org/whisper.cpp');
+    console.log('    cd whisper.cpp && cmake -B build && cmake --build build --config Release -j');
+    console.log('    sudo cp build/bin/whisper-cli /usr/local/bin/whisper-cli');
   } else {
-    console.log('    # Ubuntu/Debian (if packaged):');
-    console.log('    sudo apt-get install -y whisper.cpp');
-    console.log('');
-    console.log('    # or build from source (works everywhere):');
-    console.log('    sudo apt-get install -y build-essential git');
-    console.log('    git clone https://github.com/ggerganov/whisper.cpp');
-    console.log('    cd whisper.cpp && make');
-    console.log('    sudo cp main /usr/local/bin/whisper-cli');
+    console.log('    # build from source (works everywhere):');
+    console.log('    sudo apt-get install -y build-essential cmake git');
+    console.log('    git clone https://github.com/ggml-org/whisper.cpp');
+    console.log('    cd whisper.cpp && cmake -B build && cmake --build build --config Release -j');
+    console.log('    sudo cp build/bin/whisper-cli /usr/local/bin/whisper-cli');
   }
   console.log('');
   console.log('  Then point Murmur at the model you just downloaded:');
