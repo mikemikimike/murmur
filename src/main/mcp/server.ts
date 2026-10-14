@@ -1,5 +1,7 @@
+import { readFileSync } from 'node:fs';
 import { createServer, type Server, type ServerResponse } from 'node:http';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { z } from 'zod';
@@ -11,6 +13,16 @@ import type { Pipeline, ProcessPcmResult } from '../pipeline.js';
 import { isValidSkillId, loadSkills } from '../skills.js';
 
 const PIPELINE_BUSY_MESSAGE = 'pipeline is busy (recording or processing)';
+
+/** <pkg>/dist/main/mcp/server.js -> <pkg>/package.json */
+const PACKAGE_VERSION = (() => {
+  try {
+    const pkgPath = fileURLToPath(new URL('../../../package.json', import.meta.url));
+    return (JSON.parse(readFileSync(pkgPath, 'utf8')) as { version?: string }).version ?? '0.0.0';
+  } catch {
+    return '0.0.0';
+  }
+})();
 
 export interface McpServerHandle {
   port: number;
@@ -298,7 +310,7 @@ function registerMurmurTools(
 }
 
 export function createMurmurMcpServer(deps: MurmurMcpServerDeps): MurmurMcpServer {
-  const server = new McpServer({ name: 'murmur', version: '0.6.0' });
+  const server = new McpServer({ name: 'murmur', version: PACKAGE_VERSION });
   const handlers = new Map<string, (args: Record<string, unknown>) => Promise<ToolResult>>();
   registerMurmurTools(server, deps, handlers);
 
