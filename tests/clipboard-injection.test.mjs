@@ -107,3 +107,85 @@ describe('clipboard injection', () => {
     ]);
   });
 });
+
+describe('clipboard injection with an async clipboard (Electron 44+)', () => {
+  // Electron 44 made clipboard.readText/writeText return promises. A write only
+  // lands after a macrotask, so code that does not await it reads stale text.
+  function asyncClipboardDeps(initial = 'previous') {
+    let text = initial;
+    const calls = [];
+    return {
+      calls,
+      getClipboard: () => text,
+      deps: {
+        clipboard: {
+          readText: () => new Promise((resolve) => setImmediate(() => resolve(text))),
+          writeText: (t) =>
+            new Promise((resolve) =>
+              setImmediate(() => {
+                calls.push(['clipboard.writeText', t]);
+                text = t;
+                resolve();
+              }),
+            ),
+        },
+        keyboard: {
+          type: async (...keys) => {
+            calls.push(['keyboard.type', ...keys]);
+          },
+        },
+        keys: { pasteModifier: 'Ctrl', v: 'V' },
+        sleep: async () => {},
+        logger: { warn: () => {} },
+      },
+    };
+  }
+
+  it('pastes after the write has landed instead of falling back to typing', async () => {
+    const { deps, calls, getClipboard } = asyncClipboardDeps();
+
+    await injectGeneratedText(
+      'generated',
+      {
+        injectionMethod: 'clipboard',
+        clipboardRestoreDelayMs: 0,
+        clipboardRetention: 'keep-generated',
+      },
+      deps,
+    );
+
+    assert.equal(getClipboard(), 'generated');
+    assert.deepEqual(calls, [
+      ['clipboard.writeText', 'generated'],
+      ['keyboard.type', 'Ctrl', 'V'],
+    ]);
+  });
+
+  it('restores the previous text once the paste is done', async () => {
+    const { deps, getClipboard } = asyncClipboardDeps();
+
+    await injectGeneratedText(
+      'generated',
+      {
+        injectionMethod: 'clipboard',
+        clipboardRestoreDelayMs: 0,
+        clipboardRetention: 'restore-previous',
+      },
+      deps,
+    );
+
+    assert.equal(getClipboard(), 'previous');
+  });
+
+  it('has written the text to the clipboard by the time direct typing mode returns', async () => {
+    const { deps, getClipboard } = asyncClipboardDeps();
+
+    await injectGeneratedText(
+      'generated',
+      { injectionMethod: 'type', clipboardRestoreDelayMs: 0, clipboardRetention: 'keep-generated' },
+      deps,
+    );
+
+    assert.equal(getClipboard(), 'generated');
+  });
+});
