@@ -35,6 +35,7 @@
         </div>
       </div>
       <div class="topbar-actions">
+        <!-- biome-ignore lint/a11y/useSemanticElements: a fieldset would change the topbar layout -->
         <div class="overlay-control" id="overlay-control" role="group" aria-label="Overlay">
           <span class="overlay-label">Overlay</span>
           <span class="overlay-state" id="overlay-state" data-state="unknown">
@@ -67,7 +68,7 @@
 
     <div id="config-error" class="config-banner" role="alert" hidden></div>
 
-    <nav class="tabs" role="tablist">
+    <div class="tabs" role="tablist">
       <button type="button" class="tab" data-tab="system-prompt">System prompt</button>
       <button type="button" class="tab" data-tab="skills">Skills</button>
       <button type="button" class="tab" data-tab="provider">Provider</button>
@@ -76,7 +77,7 @@
       <button type="button" class="tab" data-tab="voice">Voice &amp; context</button>
       <button type="button" class="tab" data-tab="paths">Paths</button>
       <button type="button" class="tab" data-tab="model-guide">Model guide</button>
-    </nav>
+    </div>
 
     <main class="content">
       <section class="pane" data-pane="system-prompt">
@@ -125,9 +126,9 @@
                 <button type="button" class="import-tab" data-itab="url">From URL</button>
               </div>
               <div id="import-pane-file" class="import-pane">
-                <label id="import-file-label" class="import-file-label">
+                <div id="import-file-label" class="import-file-label">
                   Click or drag a <code>.md</code> skill file
-                </label>
+                </div>
                 <input id="skill-file-input" type="file" accept=".md,.txt" style="display:none" />
               </div>
               <div id="import-pane-url" class="import-pane hidden">
