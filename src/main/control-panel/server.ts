@@ -5,6 +5,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
   type ConfigOverrides,
+  getConfigFileError,
   type PartialConfig,
   type ResolvedConfig,
   updateConfigFile,
@@ -177,6 +178,7 @@ function stateSnapshot(deps: ServerDeps, csrfToken: string): Record<string, unkn
   return {
     config: publicConfig(cfg),
     overrides: deps.getCurrentOverrides?.() ?? {},
+    configError: getConfigFileError(cfg.configFilePath),
     skills: skills.map(skillJson),
     composedSystemPrompt: composed,
     providers: Object.entries(PROVIDER_PRESETS).map(([id, preset]) => ({
@@ -218,6 +220,22 @@ function matchRoute(pathname: string, pattern: string): Record<string, string> |
   return params;
 }
 
+/**
+ * Applies `mutate` to config.json. If the write is refused (unparseable file)
+ * or fails, answers 409 so the panel never reports a save that didn't happen.
+ */
+function persistConfig(
+  deps: ServerDeps,
+  res: ServerResponse,
+  mutate: (raw: Record<string, unknown>) => void,
+): boolean {
+  const { configFilePath } = deps.getCurrentConfig();
+  if (updateConfigFile(configFilePath, mutate)) return true;
+  const reason = getConfigFileError(configFilePath) ?? 'could not write the config file';
+  sendError(res, 409, `Not saved: ${reason}`);
+  return false;
+}
+
 async function handleApi(ctx: RouteContext): Promise<boolean> {
   const { method, pathname, body, deps, res, csrfToken } = ctx;
 
@@ -240,10 +258,13 @@ async function handleApi(ctx: RouteContext): Promise<boolean> {
 
   if (method === 'PUT' && pathname === '/api/config') {
     const patch = sanitizePartial(body, 'control-panel');
-    const cfg = deps.getCurrentConfig();
-    updateConfigFile(cfg.configFilePath, (raw) => {
-      mergePatchIntoRaw(raw, patch);
-    });
+    if (
+      !persistConfig(deps, res, (raw) => {
+        mergePatchIntoRaw(raw, patch);
+      })
+    ) {
+      return true;
+    }
     deps.onConfigUpdated();
     sendJson(res, 200, stateSnapshot(deps, csrfToken));
     return true;
@@ -255,11 +276,14 @@ async function handleApi(ctx: RouteContext): Promise<boolean> {
       sendError(res, 400, 'prompt must be a string');
       return true;
     }
-    const cfg = deps.getCurrentConfig();
     const prompt = b.prompt;
-    updateConfigFile(cfg.configFilePath, (raw) => {
-      raw.systemPrompt = prompt;
-    });
+    if (
+      !persistConfig(deps, res, (raw) => {
+        raw.systemPrompt = prompt;
+      })
+    ) {
+      return true;
+    }
     deps.onConfigUpdated();
     sendJson(res, 200, stateSnapshot(deps, csrfToken));
     return true;
@@ -317,10 +341,14 @@ async function handleApi(ctx: RouteContext): Promise<boolean> {
         }
         // Also remove from enabledSkills.
         if (cfg.enabledSkills.includes(p.id)) {
-          updateConfigFile(cfg.configFilePath, (raw) => {
-            const arr = Array.isArray(raw.enabledSkills) ? (raw.enabledSkills as string[]) : [];
-            raw.enabledSkills = arr.filter((id) => id !== p.id);
-          });
+          if (
+            !persistConfig(deps, res, (raw) => {
+              const arr = Array.isArray(raw.enabledSkills) ? (raw.enabledSkills as string[]) : [];
+              raw.enabledSkills = arr.filter((id) => id !== p.id);
+            })
+          ) {
+            return true;
+          }
           deps.onConfigUpdated();
         }
         sendJson(res, 200, stateSnapshot(deps, csrfToken));
@@ -339,13 +367,17 @@ async function handleApi(ctx: RouteContext): Promise<boolean> {
       const cfg = deps.getCurrentConfig();
       const b = body as { enabled?: boolean };
       const enable = b?.enabled ?? !cfg.enabledSkills.includes(p.id);
-      updateConfigFile(cfg.configFilePath, (raw) => {
-        const arr = Array.isArray(raw.enabledSkills) ? (raw.enabledSkills as string[]) : [];
-        const set = new Set(arr);
-        if (enable) set.add(p.id);
-        else set.delete(p.id);
-        raw.enabledSkills = [...set];
-      });
+      if (
+        !persistConfig(deps, res, (raw) => {
+          const arr = Array.isArray(raw.enabledSkills) ? (raw.enabledSkills as string[]) : [];
+          const set = new Set(arr);
+          if (enable) set.add(p.id);
+          else set.delete(p.id);
+          raw.enabledSkills = [...set];
+        })
+      ) {
+        return true;
+      }
       deps.onConfigUpdated();
       sendJson(res, 200, stateSnapshot(deps, csrfToken));
       return true;

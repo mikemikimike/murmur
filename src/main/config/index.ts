@@ -15,7 +15,7 @@ import {
 
 export { HELP_TEXT } from './cli.js';
 export { DEFAULT_CONFIG, DEFAULT_SYSTEM_PROMPT } from './defaults.js';
-export { updateConfigFile } from './file.js';
+export { getConfigFileError, updateConfigFile } from './file.js';
 export type {
   AppSkillRoute,
   ClipboardRetention,
@@ -241,6 +241,8 @@ export interface LoadedConfig {
   cli: CliResult;
   configFileExisted: boolean;
   configFileWritten: boolean;
+  /** Set when config.json exists but could not be read or parsed; defaults are in use and the file is left untouched. */
+  configFileError: string | null;
   overrides: ConfigOverrides;
   valueSources: ConfigValueSources;
 }
@@ -541,6 +543,7 @@ export function loadConfig(opts: LoadConfigOptions): LoadedConfig {
     cli,
     configFileExisted: fileLoad.existed,
     configFileWritten: written,
+    configFileError: fileLoad.error ?? null,
     overrides: computeOverrides(sources),
     valueSources: computeValueSources(sources),
   };
@@ -666,4 +669,5 @@ export function printResolvedConfig(loaded: LoadedConfig): void {
   console.log(`\nconfig file: ${loaded.resolved.configFilePath}`);
   console.log(`  existed: ${loaded.configFileExisted}`);
   console.log(`  written: ${loaded.configFileWritten}`);
+  if (loaded.configFileError) console.log(`  error: ${loaded.configFileError}`);
 }

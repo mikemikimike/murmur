@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { request as httpRequest } from 'node:http';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -239,5 +239,69 @@ describe('control-panel server', () => {
       headers,
     });
     assert.equal(del.status, 400);
+  });
+
+  describe('with an unparseable config.json', () => {
+    const MALFORMED = '{\n "provider": "anthropic",\n "systemPrompt": "TUNED",\n}\n';
+
+    async function startWithMalformedConfig() {
+      const configFilePath = path.join(tempDir, 'config.json');
+      writeFileSync(configFilePath, MALFORMED, 'utf8');
+      const cfg = makeFakeConfig({ skillsDir: tempDir, configFilePath });
+      handle = await startControlPanelServer({
+        getCurrentConfig: () => cfg,
+        onConfigUpdated: () => {},
+        testLlm: async () => ({ ok: true, message: 'mocked' }),
+      });
+      const state = await (await fetch(`${handle.url}/api/state`)).json();
+      return { configFilePath, state };
+    }
+
+    it('reports the parse error in GET /api/state so the panel can show a banner', async () => {
+      const { state } = await startWithMalformedConfig();
+      assert.match(state.configError, /line 4\b/);
+    });
+
+    it('reports no configError for a valid config', async () => {
+      const configFilePath = path.join(tempDir, 'config.json');
+      writeFileSync(configFilePath, '{"model":"x"}', 'utf8');
+      const cfg = makeFakeConfig({ skillsDir: tempDir, configFilePath });
+      handle = await startControlPanelServer({
+        getCurrentConfig: () => cfg,
+        onConfigUpdated: () => {},
+        testLlm: async () => ({ ok: true, message: 'mocked' }),
+      });
+      const state = await (await fetch(`${handle.url}/api/state`)).json();
+      assert.equal(state.configError, null);
+    });
+
+    it('refuses PUT /api/config instead of overwriting the file', async () => {
+      const { configFilePath, state } = await startWithMalformedConfig();
+      const res = await fetch(`${handle.url}/api/config`, {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Murmur-Token': state.security.csrfToken,
+        },
+        body: JSON.stringify({ model: 'new-model' }),
+      });
+      assert.equal(res.status, 409);
+      assert.match((await res.json()).error, /line 4\b/);
+      assert.equal(readFileSync(configFilePath, 'utf8'), MALFORMED);
+    });
+
+    it('refuses PUT /api/system-prompt instead of overwriting the file', async () => {
+      const { configFilePath, state } = await startWithMalformedConfig();
+      const res = await fetch(`${handle.url}/api/system-prompt`, {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Murmur-Token': state.security.csrfToken,
+        },
+        body: JSON.stringify({ prompt: 'new prompt' }),
+      });
+      assert.equal(res.status, 409);
+      assert.equal(readFileSync(configFilePath, 'utf8'), MALFORMED);
+    });
   });
 });

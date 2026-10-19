@@ -8,6 +8,7 @@ const dirtyForms = new Set();
 const state = {
   config: null,
   overrides: {},
+  configError: null,
   skills: [],
   composedSystemPrompt: '',
   providers: [],
@@ -214,6 +215,20 @@ function applyOverridesToDom() {
   }
 }
 
+/**
+ * config.json exists but can't be parsed: Murmur is running on built-in defaults
+ * and refuses to save over the file, so say so instead of looking healthy.
+ */
+function applyConfigErrorToDom() {
+  const el = $('#config-error');
+  if (!el) return;
+  const message = state.configError;
+  el.hidden = !message;
+  el.textContent = message
+    ? `config.json could not be parsed, so built-in defaults are in use and nothing will be saved until it is fixed. ${message}`
+    : '';
+}
+
 function setFieldLocked(input, info, source) {
   const wrapper = input.closest('.field') ?? input.parentElement;
   const existing = wrapper?.querySelector('.override-chip');
@@ -342,6 +357,7 @@ async function refresh() {
     const snap = await api('GET', '/api/state');
     state.config = snap.config;
     state.overrides = snap.overrides ?? {};
+    state.configError = snap.configError ?? null;
     state.skills = snap.skills;
     state.composedSystemPrompt = snap.composedSystemPrompt;
     state.providers = snap.providers;
@@ -349,6 +365,7 @@ async function refresh() {
     state.overlay = snap.overlay ?? { visible: null };
     applyStateToDom();
     applyOverridesToDom();
+    applyConfigErrorToDom();
     applyOverlayStateToDom();
     setSaveStatus('');
   } catch (err) {
@@ -525,12 +542,14 @@ function wireSkills() {
 function applySnapshot(snap) {
   state.config = snap.config;
   state.overrides = snap.overrides ?? state.overrides ?? {};
+  state.configError = snap.configError ?? null;
   state.skills = snap.skills;
   state.composedSystemPrompt = snap.composedSystemPrompt;
   state.providers = snap.providers ?? state.providers;
   state.csrfToken = snap.security?.csrfToken ?? state.csrfToken;
   applyStateToDom();
   applyOverridesToDom();
+  applyConfigErrorToDom();
 }
 
 function slugify(s) {

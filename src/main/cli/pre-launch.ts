@@ -47,6 +47,12 @@ async function main(): Promise<void> {
   let cfg = loaded.resolved;
   const configWasWritten = loaded.configFileWritten;
   printBanner(getVersion());
+  if (loaded.configFileError) {
+    console.log(`\n  ! ${loaded.configFileError}`);
+    console.log(
+      '    Using built-in defaults. Murmur will not overwrite the file; fix it and relaunch.',
+    );
+  }
 
   const skills = loadSkills(cfg.skillsDir);
   const panelUrl = controlPanelUrl(cfg.controlPanelPort);
