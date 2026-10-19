@@ -8,6 +8,8 @@ const dirtyForms = new Set();
 const state = {
   config: null,
   overrides: {},
+  shadowedEnv: {},
+  configError: null,
   skills: [],
   composedSystemPrompt: '',
   providers: [],
@@ -35,7 +37,6 @@ const FIELD_INFO = {
     flag: '--whisper-model',
     env: 'WHISPER_MODEL_PATH',
   },
-  sampleRate: { inputId: 'cfg-sampleRate', flag: '--sample-rate', env: 'WHISPER_SAMPLE_RATE' },
   hotkeyCombo: { inputId: 'cfg-hotkeyCombo', flag: '--hotkey', env: 'MURMUR_HOTKEY' },
   toggleHotkeyCombo: {
     inputId: 'cfg-toggleHotkeyCombo',
@@ -107,8 +108,36 @@ async function api(method, path, body) {
   const res = await fetch(path, opts);
   const text = await res.text();
   const json = text ? JSON.parse(text) : {};
-  if (!res.ok) throw new Error(json.error || `HTTP ${res.status}`);
+  if (!res.ok) {
+    const err = new Error(json.error || `HTTP ${res.status}`);
+    err.rejected = json.rejected;
+    throw err;
+  }
   return json;
+}
+
+function clearFieldErrors() {
+  for (const el of $$('.field-error')) el.remove();
+  for (const el of $$('.invalid')) el.classList.remove('invalid');
+}
+
+/**
+ * Marks the inputs the server refused (`rejected` is `{ field: reason }`) so a
+ * failed save never looks like a successful one.  The form stays dirty because
+ * callers only clear it after a successful save.
+ */
+function showFieldErrors(rejected) {
+  clearFieldErrors();
+  for (const [key, reason] of Object.entries(rejected ?? {})) {
+    const input = document.getElementById(`cfg-${key.replace(/^overlay\./, '')}`);
+    const wrapper = input?.closest('.field') ?? input?.parentElement;
+    if (!input || !wrapper) continue;
+    input.classList.add('invalid');
+    const note = document.createElement('span');
+    note.className = 'field-hint field-error';
+    note.textContent = `Not saved: ${reason}`;
+    wrapper.appendChild(note);
+  }
 }
 
 function toast(message, kind = '') {
@@ -154,7 +183,6 @@ function applyStateToDom() {
   if (!dirtyForms.has('whisper')) {
     $('#cfg-whisperCliPath').value = c.whisperCliPath;
     $('#cfg-whisperModelPath').value = c.whisperModelPath;
-    $('#cfg-sampleRate').value = c.sampleRate;
   }
 
   if (!dirtyForms.has('hotkeys')) {
@@ -212,6 +240,52 @@ function applyOverridesToDom() {
     const source = overrides[key];
     setFieldLocked(input, info, source);
   }
+}
+
+/**
+ * An env var that is set but outranked (by a CLI flag or config.json) locks
+ * nothing, since the field is still editable here.  Say why the env var does
+ * nothing so nobody wonders why their `.env` edit had no effect.
+ */
+function applyShadowedEnvToDom() {
+  const shadowed = state.shadowedEnv ?? {};
+  for (const [key, info] of Object.entries(FIELD_INFO)) {
+    const input = document.getElementById(info.inputId);
+    const wrapper = input?.closest('.field') ?? input?.parentElement;
+    if (!wrapper) continue;
+    const existing = wrapper.querySelector('.shadow-note');
+    const entry = shadowed[key];
+    if (!entry) {
+      existing?.remove();
+      continue;
+    }
+    const text =
+      entry.by === 'cli'
+        ? `${entry.envVar} is set, but the ${info.flag} CLI flag overrides it.`
+        : `${entry.envVar} is set, but config.json overrides it. Remove "${key}" from config.json to use the env var.`;
+    if (existing) {
+      existing.textContent = text;
+      continue;
+    }
+    const note = document.createElement('span');
+    note.className = 'field-hint shadow-note';
+    note.textContent = text;
+    wrapper.appendChild(note);
+  }
+}
+
+/**
+ * config.json exists but can't be parsed: Murmur is running on built-in defaults
+ * and refuses to save over the file, so say so instead of looking healthy.
+ */
+function applyConfigErrorToDom() {
+  const el = $('#config-error');
+  if (!el) return;
+  const message = state.configError;
+  el.hidden = !message;
+  el.textContent = message
+    ? `config.json could not be parsed, so built-in defaults are in use and nothing will be saved until it is fixed. ${message}`
+    : '';
 }
 
 function setFieldLocked(input, info, source) {
@@ -342,6 +416,8 @@ async function refresh() {
     const snap = await api('GET', '/api/state');
     state.config = snap.config;
     state.overrides = snap.overrides ?? {};
+    state.shadowedEnv = snap.shadowedEnv ?? {};
+    state.configError = snap.configError ?? null;
     state.skills = snap.skills;
     state.composedSystemPrompt = snap.composedSystemPrompt;
     state.providers = snap.providers;
@@ -349,6 +425,8 @@ async function refresh() {
     state.overlay = snap.overlay ?? { visible: null };
     applyStateToDom();
     applyOverridesToDom();
+    applyShadowedEnvToDom();
+    applyConfigErrorToDom();
     applyOverlayStateToDom();
     setSaveStatus('');
   } catch (err) {
@@ -525,12 +603,16 @@ function wireSkills() {
 function applySnapshot(snap) {
   state.config = snap.config;
   state.overrides = snap.overrides ?? state.overrides ?? {};
+  state.shadowedEnv = snap.shadowedEnv ?? state.shadowedEnv ?? {};
+  state.configError = snap.configError ?? null;
   state.skills = snap.skills;
   state.composedSystemPrompt = snap.composedSystemPrompt;
   state.providers = snap.providers ?? state.providers;
   state.csrfToken = snap.security?.csrfToken ?? state.csrfToken;
   applyStateToDom();
   applyOverridesToDom();
+  applyShadowedEnvToDom();
+  applyConfigErrorToDom();
 }
 
 function slugify(s) {
@@ -549,7 +631,6 @@ function readConfigForm(extra = {}) {
     temperature: Number($('#cfg-temperature').value),
     whisperCliPath: $('#cfg-whisperCliPath').value.trim(),
     whisperModelPath: $('#cfg-whisperModelPath').value.trim(),
-    sampleRate: Number($('#cfg-sampleRate').value),
     hotkeyCombo: $('#cfg-hotkeyCombo').value.trim(),
     toggleHotkeyCombo: $('#cfg-toggleHotkeyCombo').value.trim(),
     clipboardRestoreDelayMs: Number($('#cfg-clipboardRestoreDelayMs').value),
@@ -590,12 +671,14 @@ function wireProvider() {
     else if (apiKey === '' && $('#cfg-apiKey').dataset.clear === '1') patch.apiKey = null;
     try {
       const snap = await api('PUT', '/api/config', patch);
+      clearFieldErrors();
       dirtyForms.delete('provider');
       applySnapshot(snap);
       // Evaluate the online warning only after the user deliberately saves.
       updateOnlineWarning(patch.baseUrl);
       toast('Provider saved', 'success');
     } catch (err) {
+      showFieldErrors(err.rejected);
       toast(err.message, 'error');
     }
   });
@@ -687,10 +770,12 @@ function wireGenericForm(selector, extract, dirtyKey) {
     e.preventDefault();
     try {
       const snap = await api('PUT', '/api/config', extract());
+      clearFieldErrors();
       if (dirtyKey) dirtyForms.delete(dirtyKey);
       applySnapshot(snap);
       toast('Saved', 'success');
     } catch (err) {
+      showFieldErrors(err.rejected);
       toast(err.message, 'error');
     }
   });
@@ -702,7 +787,6 @@ function wireWhisper() {
     () => ({
       whisperCliPath: $('#cfg-whisperCliPath').value.trim(),
       whisperModelPath: $('#cfg-whisperModelPath').value.trim(),
-      sampleRate: Number($('#cfg-sampleRate').value),
     }),
     'whisper',
   );
@@ -777,11 +861,13 @@ function wireSaveAll() {
       setSaveStatus('Saving…');
       await api('PUT', '/api/system-prompt', { prompt: $('#system-prompt').value });
       await api('PUT', '/api/config', readConfigForm());
+      clearFieldErrors();
       dirtyForms.clear();
       setSaveStatus('Saved', 'ok');
       toast('Everything saved', 'success');
       await refresh();
     } catch (err) {
+      showFieldErrors(err.rejected);
       setSaveStatus('Error', 'error');
       toast(err.message, 'error');
     }

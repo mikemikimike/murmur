@@ -5,11 +5,13 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
   type ConfigOverrides,
+  type ConfigShadowedEnv,
+  getConfigFileError,
   type PartialConfig,
   type ResolvedConfig,
   updateConfigFile,
 } from '../config/index.js';
-import { sanitizePartial } from '../config/schema.js';
+import { describeRejected, sanitizePartial } from '../config/schema.js';
 import { hasLoopbackHost, isLoopbackHostname } from '../http-guard.js';
 import { PROVIDER_PRESETS } from '../providers/index.js';
 import {
@@ -43,6 +45,11 @@ export interface ServerDeps {
    * editing them would silently no-op on the next config reload.
    */
   getCurrentOverrides?: () => ConfigOverrides;
+  /**
+   * Env vars that are set but outranked by a CLI flag or config.json.  They
+   * lock nothing; the panel just explains why the env var has no effect.
+   */
+  getCurrentShadowedEnv?: () => ConfigShadowedEnv;
   /** Called when the config has been mutated (file already written). Expected to re-resolve. */
   onConfigUpdated: () => void;
   /** Probe the LLM provider with the current config. */
@@ -129,7 +136,6 @@ function publicConfig(cfg: ResolvedConfig): Record<string, unknown> {
     temperature: cfg.temperature,
     whisperCliPath: cfg.whisperCliPath,
     whisperModelPath: cfg.whisperModelPath,
-    sampleRate: cfg.sampleRate,
     hotkeyCombo: cfg.hotkeyCombo,
     toggleHotkeyCombo: cfg.toggleHotkeyCombo,
     clipboardRestoreDelayMs: cfg.clipboardRestoreDelayMs,
@@ -177,6 +183,8 @@ function stateSnapshot(deps: ServerDeps, csrfToken: string): Record<string, unkn
   return {
     config: publicConfig(cfg),
     overrides: deps.getCurrentOverrides?.() ?? {},
+    shadowedEnv: deps.getCurrentShadowedEnv?.() ?? {},
+    configError: getConfigFileError(cfg.configFilePath),
     skills: skills.map(skillJson),
     composedSystemPrompt: composed,
     providers: Object.entries(PROVIDER_PRESETS).map(([id, preset]) => ({
@@ -218,6 +226,22 @@ function matchRoute(pathname: string, pattern: string): Record<string, string> |
   return params;
 }
 
+/**
+ * Applies `mutate` to config.json. If the write is refused (unparseable file)
+ * or fails, answers 409 so the panel never reports a save that didn't happen.
+ */
+function persistConfig(
+  deps: ServerDeps,
+  res: ServerResponse,
+  mutate: (raw: Record<string, unknown>) => void,
+): boolean {
+  const { configFilePath } = deps.getCurrentConfig();
+  if (updateConfigFile(configFilePath, mutate)) return true;
+  const reason = getConfigFileError(configFilePath) ?? 'could not write the config file';
+  sendError(res, 409, `Not saved: ${reason}`);
+  return false;
+}
+
 async function handleApi(ctx: RouteContext): Promise<boolean> {
   const { method, pathname, body, deps, res, csrfToken } = ctx;
 
@@ -240,10 +264,23 @@ async function handleApi(ctx: RouteContext): Promise<boolean> {
 
   if (method === 'PUT' && pathname === '/api/config') {
     const patch = sanitizePartial(body, 'control-panel');
-    const cfg = deps.getCurrentConfig();
-    updateConfigFile(cfg.configFilePath, (raw) => {
-      mergePatchIntoRaw(raw, patch);
-    });
+    const rejected = describeRejected(body, patch);
+    if (Object.keys(rejected).length > 0) {
+      // Best-effort sanitizing is right for hand-edited files, but a save that
+      // silently drops a field reads as success. Refuse the whole request.
+      const detail = Object.entries(rejected)
+        .map(([field, reason]) => `${field} ${reason}`)
+        .join('; ');
+      sendJson(res, 400, { error: `Not saved: ${detail}`, rejected });
+      return true;
+    }
+    if (
+      !persistConfig(deps, res, (raw) => {
+        mergePatchIntoRaw(raw, patch);
+      })
+    ) {
+      return true;
+    }
     deps.onConfigUpdated();
     sendJson(res, 200, stateSnapshot(deps, csrfToken));
     return true;
@@ -255,11 +292,14 @@ async function handleApi(ctx: RouteContext): Promise<boolean> {
       sendError(res, 400, 'prompt must be a string');
       return true;
     }
-    const cfg = deps.getCurrentConfig();
     const prompt = b.prompt;
-    updateConfigFile(cfg.configFilePath, (raw) => {
-      raw.systemPrompt = prompt;
-    });
+    if (
+      !persistConfig(deps, res, (raw) => {
+        raw.systemPrompt = prompt;
+      })
+    ) {
+      return true;
+    }
     deps.onConfigUpdated();
     sendJson(res, 200, stateSnapshot(deps, csrfToken));
     return true;
@@ -317,10 +357,14 @@ async function handleApi(ctx: RouteContext): Promise<boolean> {
         }
         // Also remove from enabledSkills.
         if (cfg.enabledSkills.includes(p.id)) {
-          updateConfigFile(cfg.configFilePath, (raw) => {
-            const arr = Array.isArray(raw.enabledSkills) ? (raw.enabledSkills as string[]) : [];
-            raw.enabledSkills = arr.filter((id) => id !== p.id);
-          });
+          if (
+            !persistConfig(deps, res, (raw) => {
+              const arr = Array.isArray(raw.enabledSkills) ? (raw.enabledSkills as string[]) : [];
+              raw.enabledSkills = arr.filter((id) => id !== p.id);
+            })
+          ) {
+            return true;
+          }
           deps.onConfigUpdated();
         }
         sendJson(res, 200, stateSnapshot(deps, csrfToken));
@@ -339,13 +383,17 @@ async function handleApi(ctx: RouteContext): Promise<boolean> {
       const cfg = deps.getCurrentConfig();
       const b = body as { enabled?: boolean };
       const enable = b?.enabled ?? !cfg.enabledSkills.includes(p.id);
-      updateConfigFile(cfg.configFilePath, (raw) => {
-        const arr = Array.isArray(raw.enabledSkills) ? (raw.enabledSkills as string[]) : [];
-        const set = new Set(arr);
-        if (enable) set.add(p.id);
-        else set.delete(p.id);
-        raw.enabledSkills = [...set];
-      });
+      if (
+        !persistConfig(deps, res, (raw) => {
+          const arr = Array.isArray(raw.enabledSkills) ? (raw.enabledSkills as string[]) : [];
+          const set = new Set(arr);
+          if (enable) set.add(p.id);
+          else set.delete(p.id);
+          raw.enabledSkills = [...set];
+        })
+      ) {
+        return true;
+      }
       deps.onConfigUpdated();
       sendJson(res, 200, stateSnapshot(deps, csrfToken));
       return true;
@@ -374,7 +422,6 @@ function mergePatchIntoRaw(raw: Record<string, unknown>, patch: PartialConfig): 
     'temperature',
     'whisperCliPath',
     'whisperModelPath',
-    'sampleRate',
     'hotkeyCombo',
     'toggleHotkeyCombo',
     'clipboardRestoreDelayMs',

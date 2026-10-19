@@ -39,7 +39,8 @@ export async function runPreflight(
     errors.push(
       `whisper.cpp binary not found at ${cfg.whisperCliPath}.\n` +
         `  Fix: ${setupHint()}\n` +
-        `       or set --whisper-cli / WHISPER_CLI_PATH to an existing binary`,
+        `       or pass --whisper-cli, or set whisperCliPath in config.json\n` +
+        `       (WHISPER_CLI_PATH only applies while config.json has no whisperCliPath)`,
     );
   }
 
@@ -47,7 +48,8 @@ export async function runPreflight(
     errors.push(
       `whisper model not found at ${cfg.whisperModelPath}.\n` +
         `  Fix: ${setupHint()}\n` +
-        `       or set --whisper-model / WHISPER_MODEL_PATH to an existing .bin file`,
+        `       or pass --whisper-model, or set whisperModelPath in config.json\n` +
+        `       (WHISPER_MODEL_PATH only applies while config.json has no whisperModelPath)`,
     );
   }
 
@@ -58,7 +60,8 @@ export async function runPreflight(
         errors.push(
           `headless recorder command not found: ${recorderBin}.\n` +
             `  Fix: install SoX on Windows/macOS or alsa-utils on Linux,\n` +
-            `       or set --recorder-command / MURMUR_RECORDER_COMMAND`,
+            `       or pass --recorder-command, or set MURMUR_RECORDER_COMMAND\n` +
+            `       (config.json's recorderCommand, if present, takes precedence over the env var)`,
         );
       }
     } catch (err) {

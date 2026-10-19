@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, it } from 'node:test';
@@ -630,5 +630,52 @@ describe('Pipeline overlay path', () => {
 
     assert.equal(injections.length, 1);
     assert.ok(statuses.includes('injecting'));
+  });
+});
+
+describe('Pipeline capture sample rate', () => {
+  let tempBase;
+
+  beforeEach(() => {
+    tempBase = mkdtempSync(path.join(tmpdir(), 'murmur-pipe-'));
+  });
+
+  afterEach(() => {
+    if (tempBase) rmSync(tempBase, { recursive: true, force: true });
+  });
+
+  /** Runs 3 s of 16 kHz PCM (what the renderer and headless recorder deliver). */
+  async function run(cfgOverrides) {
+    const cfg = makeFakeConfig({ _baseDir: tempBase, logMode: 'full', ...cfgOverrides });
+    let headerRate = null;
+    const pipeline = new Pipeline({
+      cfg,
+      provider: makeFakeProvider([]),
+      emitStatus: () => {},
+      transcribeAudio: async (wavPath) => {
+        headerRate = readFileSync(wavPath).readUInt32LE(24);
+        return { text: 'hello world', stderr: '', durationMs: 1 };
+      },
+      inject: async () => {},
+    });
+    const result = await pipeline.processPcm(samplePcm(96_000), { inject: false });
+    const timings = JSON.parse(readFileSync(path.join(result.sessionDir, 'timings.json'), 'utf8'));
+    return { headerRate, timings };
+  }
+
+  it('labels the WAV 16000 Hz even when cfg.sampleRate says otherwise', async () => {
+    const { headerRate } = await run({ sampleRate: 48000 });
+    assert.equal(headerRate, 16000);
+  });
+
+  it('measures duration at 16 kHz even when cfg.sampleRate says otherwise', async () => {
+    const { timings } = await run({ sampleRate: 48000 });
+    assert.equal(timings.audioDurationMs, 3000);
+  });
+
+  it('is unchanged for the default 16 kHz config', async () => {
+    const { headerRate, timings } = await run({});
+    assert.equal(headerRate, 16000);
+    assert.equal(timings.audioDurationMs, 3000);
   });
 });

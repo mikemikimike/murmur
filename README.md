@@ -105,7 +105,7 @@ pnpm setup:whisper
 pnpm dev
 ```
 
-Options A-C drop you in the same overlay flow. The first run creates a config file at `%APPDATA%\murmur\config.json` (Windows), `~/Library/Application Support/murmur/config.json` (macOS), or `~/.config/murmur/config.json` (Linux), with sensible defaults, and prints a banner in the terminal. Grab the **control panel URL** it shows (default `http://localhost:7331`) to tweak things in a browser without touching JSON.
+Options A-C drop you in the same overlay flow. The first run creates a config file at `%APPDATA%\murmur\config.json` (Windows), `~/Library/Application Support/murmur/config.json` (macOS), or `~/.config/murmur/config.json` (Linux), pre-filled with just the absolute whisper, logs and skills paths (every other setting uses its built-in default until you change it), and prints a banner in the terminal. Grab the **control panel URL** it shows (default `http://localhost:7331`) to tweak things in a browser without touching JSON.
 
 ### Option D — MCP server mode (headless, no overlay)
 
@@ -195,9 +195,9 @@ Every session gets a timestamped folder under `logs/`. By default it stores timi
 - **Drag anywhere** — pill position is saved and survives restart.
 - **Toggle hotkey** — `Ctrl+Shift+H` hides / shows the overlay from any app.
 - **Right-click menu** — open the control panel, reset position, quit.
-- **Control panel on localhost** — browser-based UI for system prompt, skills, provider, hotkeys, and paths. Changes hot-reload without restarting.
+- **Control panel on localhost** — browser-based UI for system prompt, skills, provider, hotkeys, and paths. Changes hot-reload without restarting, and a value the config rejects (for example a base URL without `http://`) is refused with a message next to the field instead of being reported as saved.
 - **Skills as Markdown** — drop `.md` files into `./skills/`, toggle them on/off from the panel. Import directly from a local file or a raw URL. Version-controllable, shareable.
-- **CLI / env override badges** — when a field is locked by a `--flag` or env var, the control panel marks it read-only with a clear badge and tooltip explaining exactly how to unlock it.
+- **CLI / env override badges** — when a field's value comes from a `--flag` or env var, the control panel marks it read-only with a clear badge and tooltip explaining exactly how to unlock it. If an env var is set but a flag or `config.json` outranks it, the field stays editable and a note says why the env var has no effect.
 - **Terminal pre-launch banner** — every `pnpm dev` shows your current setup and offers a one-key menu to edit the prompt or jump to the panel.
 - **Provider agnostic** — Ollama native API, any OpenAI-compatible server (LM Studio, llama.cpp server, vLLM, Jan, KoboldCpp, oobabooga, …), and Anthropic Claude.
 - **100 % local by default** — no telemetry, no outbound network calls except to the LLM server you configured.
@@ -214,7 +214,7 @@ Open it from the overlay (right-click → **Open control panel**), from the pre-
 | --- | --- |
 | **System prompt** | Live-edit the active prompt and see the composed preview (base + enabled skills). |
 | **Skills** | Add, edit, rename, delete skills. Import from a local `.md` file or any raw Markdown URL (GitHub raw, Gist, …). One click to enable/disable each. |
-| **Provider** | Switch provider, base URL, model, API key, temperature. One-click presets for local and online providers. **Test connection** button reports latency. Fields pinned by CLI flags or env vars are shown read-only with a lock badge — see [Config precedence](#config-precedence). |
+| **Provider** | Switch provider, base URL, model, API key, temperature. One-click presets for local and online providers. **Test connection** button reports latency. Fields whose value comes from a CLI flag or env var are shown read-only with a lock badge — see [Config precedence](#config-precedence). |
 | **Whisper** | Point to a different `whisper-cli` binary (or `whisper-cli.exe` on Windows) or `.bin` model. |
 | **Hotkeys** | Bind push-to-talk and toggle combos, choose insertion mode, and decide whether the generated prompt stays on the clipboard after auto-paste. |
 | **Paths** | Logs dir, skills dir, and the resolved config file path. |
@@ -338,12 +338,12 @@ The same overlay controls live in the **Overlay** widget at the top-right of the
 Settings are resolved in this order, highest to lowest:
 
 ```
-CLI flags  >  environment variables  >  config file  >  built-in defaults
+CLI flags  >  config file  >  environment variables  >  built-in defaults
 ```
 
-This means a `--model` flag or `LLM_MODEL` env var will always win over whatever is saved in `config.json`. Saving from the control panel writes to the config file, but the change appears to revert if a higher-precedence source is active.
+A key written in `config.json` therefore beats the same setting's env var, and a `--model` flag beats both. On first run Murmur only pre-fills the absolute whisper, logs and skills paths (skipping any whose env var is set at that moment), so env vars such as `MURMUR_HOTKEY` or `MURMUR_RECORDER_COMMAND` take effect until the matching key appears in `config.json`. Saving a field from the control panel writes it to `config.json`, which from then on outranks the env var.
 
-**The control panel makes this explicit.** Any field whose current value comes from a CLI flag or env var is rendered read-only with a coloured badge beneath it:
+**The control panel reflects the order that is actually in effect.** Any field whose current value comes from a CLI flag or env var is rendered read-only with a coloured badge beneath it:
 
 ```
 Locked by --model CLI flag
@@ -351,7 +351,9 @@ Locked by --model CLI flag
 
 Hovering the badge shows a tooltip: *"Restart Murmur without the --model flag to edit this here."*
 
-To unlock a field: remove the corresponding entry from your `.env` file or drop the flag from the `pnpm dev` command.
+If an env var is set but a higher-precedence source wins, the field is **not** locked. A note under it says so (for example *"MURMUR_HOTKEY is set, but config.json overrides it"*), and Murmur prints the same warning at startup. To make the env var take effect, remove that key from `config.json`. Configs created by Murmur 0.7 or earlier already contain every key, so their env vars stay shadowed until you do.
+
+To unlock a locked field: remove the corresponding entry from your `.env` file or drop the flag from the `pnpm dev` command.
 
 ---
 
@@ -386,7 +388,7 @@ logs/2026-04-17T19-28-01-234Z/
 <details>
 <summary><strong>CLI flags</strong></summary>
 
-CLI flags trump the config file and environment variables. Append them after `pnpm dev`:
+CLI flags trump both the config file and environment variables. Append them after `pnpm dev`:
 
 ```powershell
 pnpm dev --provider openai-compat --base-url http://localhost:1234/v1 --model qwen/qwen3-1.7b
@@ -437,7 +439,7 @@ Auto-created on first run, under the OS user-data dir:
 - macOS: `~/Library/Application Support/murmur/config.json`
 - Linux: `~/.config/murmur/config.json` (respects `$XDG_CONFIG_HOME`)
 
-LLM fields are optional. If you keep env-backed LLM values during first-run setup, `provider`, `baseUrl`, `model`, and `apiKey` may be absent from the file so the env vars remain in control.
+Every field is optional. A fresh file contains only `whisperCliPath`, `whisperModelPath`, `logsDir` and `skillsDir`; anything absent falls through to its env var, then to the built-in default. That includes the LLM fields (`provider`, `baseUrl`, `model`, `apiKey`), which first-run setup only writes when you choose to persist them. Configs created by Murmur 0.7 or earlier already contain every key, and those values outrank env vars until you delete them from the file.
 
 ```json
 {
@@ -448,7 +450,6 @@ LLM fields are optional. If you keep env-backed LLM values during first-run setu
   "temperature": 0.2,
   "whisperCliPath": "whisper-cli",
   "whisperModelPath": "./models/ggml-base.en.bin",
-  "sampleRate": 16000,
   "hotkeyCombo": "Ctrl+Shift+Space",
   "toggleHotkeyCombo": "Ctrl+Shift+H",
   "clipboardRestoreDelayMs": 150,
@@ -473,12 +474,14 @@ LLM fields are optional. If you keep env-backed LLM values during first-run setu
 
 Any field can be omitted; missing fields fall through to defaults. `overlay.position` is written the first time you drag the pill — at that point `overlay.anchor` flips to `"free"` so the new spot survives restarts. Right-click → **Reset position** clears it.
 
+Audio is always captured at 16 kHz mono (what whisper.cpp expects), so there is no sample-rate setting. A `sampleRate` key left in an older config is ignored (with a warning unless it is `16000`). A custom `recorderCommand` must emit 16 kHz mono S16LE.
+
 </details>
 
 <details>
 <summary><strong>Environment variables</strong></summary>
 
-Environment variables have lower precedence than CLI flags and the config file. They are useful for `.env`-based development workflows and Docker/systemd deployments. On first run, Murmur does not seed built-in LLM defaults into `config.json`, so `LLM_PROVIDER`, `LLM_BASE_URL`, and `LLM_MODEL` can supply the initial connection unless you choose to persist different values during setup.
+Environment variables have lower precedence than CLI flags and the config file (see [Config precedence](#config-precedence)). They are useful for `.env`-based development workflows and Docker/systemd deployments. A fresh `config.json` contains only the whisper, logs and skills paths, so every other variable takes effect until you save that setting from the control panel or write it to the file. `WHISPER_CLI_PATH`, `WHISPER_MODEL_PATH`, `MURMUR_LOGS_DIR` and `MURMUR_SKILLS_DIR` only win when they are set before the first run or when the key is removed from `config.json`. If a variable is set but shadowed, Murmur warns at startup and the control panel says so next to the field.
 
 | Variable | Maps to |
 | --- | --- |
@@ -503,7 +506,7 @@ Environment variables have lower precedence than CLI flags and the config file. 
 | `MURMUR_MCP_PORT` | `mcpPort` |
 | `MURMUR_RECORDER_COMMAND` | `recorderCommand` |
 
-Create a `.env` file in the project root to set them for `pnpm dev`. Any field set this way will appear **locked** in the control panel with an env-var badge (e.g. `Locked by LLM_MODEL env var`) unless the same field is set in `config.json` or by a CLI flag. Remove or comment out the line and restart to unlock it.
+Create a `.env` file in the project root to set them for `pnpm dev`. Any field whose value comes from one of these variables appears **locked** in the control panel with an env-var badge (e.g. `Locked by LLM_MODEL env var`). If the same field is set in `config.json` or by a CLI flag, that source wins instead: the field stays editable and a note explains that the env var is shadowed. Remove or comment out the line and restart to unlock a locked field.
 
 </details>
 

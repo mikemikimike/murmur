@@ -15,7 +15,7 @@ import {
   type TokenPhase,
   type VadModePayload,
 } from '../shared/ipc.js';
-import { peakWindowRmsDb } from '../shared/pcm.js';
+import { peakWindowRmsDb, TARGET_SAMPLE_RATE } from '../shared/pcm.js';
 import type { AudioRecorder } from './audio/recorder.js';
 import type { ResolvedConfig } from './config/index.js';
 import { type CapturedContext, routeSkills, withContext } from './context/index.js';
@@ -569,19 +569,21 @@ export class Pipeline {
 
     try {
       const pcm = Buffer.isBuffer(buffer) ? buffer : Buffer.from(buffer);
-      const wav = buildWav(pcm, cfg.sampleRate);
+      // Every capture path (overlay renderer, headless recorder) yields 16 kHz mono,
+      // so label it as such regardless of what the config file says.
+      const wav = buildWav(pcm, TARGET_SAMPLE_RATE);
       const wavPath = path.join(session.dir, 'audio.wav');
       transientWavPath = wavPath;
       writeFileSync(wavPath, wav);
       if (cfg.logMode === 'full') session.writeAudio(wav);
       timings.audioBytes = wav.length;
-      timings.audioDurationMs = Math.round((pcm.length / 2 / cfg.sampleRate) * 1000);
+      timings.audioDurationMs = Math.round((pcm.length / 2 / TARGET_SAMPLE_RATE) * 1000);
       if (timings.audioDurationMs < MIN_SPEECH_MS) throw new NoSpeechError();
       // Same threshold as the overlay's VAD, applied to every capture path
       // (overlay, hotkey, MCP's recorder). Whisper turns near-silence into
       // phantom words ("you", "Thank you."), so never hand it a quiet clip.
       if (cfg.vadEnabled) {
-        const peakDb = peakWindowRmsDb(pcm, cfg.sampleRate);
+        const peakDb = peakWindowRmsDb(pcm, TARGET_SAMPLE_RATE);
         timings.peakDb = Number.isFinite(peakDb) ? Math.round(peakDb) : 'silent';
         if (peakDb < cfg.vadThresholdDb) throw new NoSpeechError();
       }
