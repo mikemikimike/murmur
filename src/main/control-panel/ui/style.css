@@ -346,6 +346,31 @@ textarea.locked:focus {
   box-shadow: none;
 }
 
+input.invalid,
+select.invalid,
+textarea.invalid {
+  border-color: var(--bad);
+}
+
+.field-hint.field-error {
+  color: var(--bad);
+}
+
+.config-banner {
+  margin: 0;
+  padding: 10px 24px;
+  font-size: 13px;
+  line-height: 1.4;
+  background: color-mix(in srgb, var(--bad) 18%, transparent);
+  color: color-mix(in srgb, var(--bad) 60%, var(--text) 40%);
+  border-bottom: 1px solid color-mix(in srgb, var(--bad) 40%, transparent);
+  overflow-wrap: anywhere;
+}
+
+.config-banner[hidden] {
+  display: none;
+}
+
 .override-chip {
   display: inline-block;
   margin-top: 6px;

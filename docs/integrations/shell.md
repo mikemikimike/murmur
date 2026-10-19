@@ -20,6 +20,8 @@ murmur serve --recorder-command "sox -q -d -r 16000 -c 1 -b 16 -e signed-integer
 export MURMUR_RECORDER_COMMAND='arecord -q -f S16_LE -r 16000 -c 1 -t raw'
 ```
 
+Precedence is `--flag` > `config.json` > env var > default. `MURMUR_RECORDER_COMMAND` therefore applies unless `config.json` sets `recorderCommand` (a fresh config does not). If it does, edit that key instead; `murmur serve` prints a warning at startup when an env var is shadowed.
+
 ## Start the server
 
 ```bash
@@ -33,7 +35,7 @@ murmur serve --port 7331 --mcp-port 7332
 
 Murmur binds MCP to `127.0.0.1` only. Use `--mcp-port 0` to pick a free port (the bound URL is printed on startup).
 
-Environment override: `MURMUR_MCP_PORT=7332` (same precedence rules as other Murmur env vars).
+Environment override: `MURMUR_MCP_PORT=7332` (same precedence as other Murmur env vars: it applies unless `--mcp-port` or an `mcpPort` key in `config.json` is set).
 
 ## MCP tools
 
