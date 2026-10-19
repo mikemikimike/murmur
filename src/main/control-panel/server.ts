@@ -11,7 +11,7 @@ import {
   type ResolvedConfig,
   updateConfigFile,
 } from '../config/index.js';
-import { sanitizePartial } from '../config/schema.js';
+import { describeRejected, sanitizePartial } from '../config/schema.js';
 import { hasLoopbackHost, isLoopbackHostname } from '../http-guard.js';
 import { PROVIDER_PRESETS } from '../providers/index.js';
 import {
@@ -265,6 +265,16 @@ async function handleApi(ctx: RouteContext): Promise<boolean> {
 
   if (method === 'PUT' && pathname === '/api/config') {
     const patch = sanitizePartial(body, 'control-panel');
+    const rejected = describeRejected(body, patch);
+    if (Object.keys(rejected).length > 0) {
+      // Best-effort sanitizing is right for hand-edited files, but a save that
+      // silently drops a field reads as success. Refuse the whole request.
+      const detail = Object.entries(rejected)
+        .map(([field, reason]) => `${field} ${reason}`)
+        .join('; ');
+      sendJson(res, 400, { error: `Not saved: ${detail}`, rejected });
+      return true;
+    }
     if (
       !persistConfig(deps, res, (raw) => {
         mergePatchIntoRaw(raw, patch);

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import { sanitizePartial } from '../dist/main/config/schema.js';
+import { describeRejected, sanitizePartial } from '../dist/main/config/schema.js';
 
 describe('sanitizePartial', () => {
   it('returns an empty object for non-object input', () => {
@@ -83,5 +83,63 @@ describe('sanitizePartial', () => {
       'test',
     );
     assert.deepEqual(out.overlay, { anchor: 'bottom-right', offsetX: 10, offsetY: 20 });
+  });
+});
+
+describe('describeRejected', () => {
+  const reject = (input) => describeRejected(input, sanitizePartial(input, 'test'));
+
+  it('reports nothing when every submitted field is accepted', () => {
+    assert.deepEqual(
+      reject({ baseUrl: 'http://localhost:1234/v1', model: 'm', apiKey: null, mcpPort: 0 }),
+      {},
+    );
+  });
+
+  it('names a scheme-less baseUrl and suggests the fix', () => {
+    const rejected = reject({ baseUrl: 'localhost:1234/v1', model: 'ok' });
+    assert.deepEqual(Object.keys(rejected), ['baseUrl']);
+    assert.match(rejected.baseUrl, /http:\/\/localhost:1234\/v1/);
+  });
+
+  it('reports out-of-range numbers and unknown enum values', () => {
+    const rejected = reject({
+      vadThresholdDb: 5,
+      mcpPort: 70000,
+      provider: 'nope',
+      logMode: 'verbose',
+      temperature: null,
+    });
+    assert.deepEqual(Object.keys(rejected).sort(), [
+      'logMode',
+      'mcpPort',
+      'provider',
+      'temperature',
+      'vadThresholdDb',
+    ]);
+  });
+
+  it('reports lists that lost entries during sanitizing', () => {
+    const rejected = reject({
+      enabledSkills: ['ok', '../evil'],
+      appSkillRoutes: [{ match: 'code', enable: ['ok'], disable: [] }, { match: 5 }],
+    });
+    assert.deepEqual(Object.keys(rejected).sort(), ['appSkillRoutes', 'enabledSkills']);
+  });
+
+  it('does not flag values that are merely normalised', () => {
+    assert.deepEqual(reject({ vadSilenceMs: 1500.7, clipboardContextEntries: 99 }), {});
+  });
+
+  it('reports a rejected overlay field with a dotted name', () => {
+    assert.deepEqual(Object.keys(reject({ overlay: { anchor: 'middle', offsetX: 4 } })), [
+      'overlay.anchor',
+    ]);
+  });
+
+  it('ignores unknown fields and non-object input', () => {
+    assert.deepEqual(reject({ bogus: 1 }), {});
+    assert.deepEqual(reject(null), {});
+    assert.deepEqual(reject([1, 2]), {});
   });
 });

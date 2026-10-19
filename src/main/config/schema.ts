@@ -298,3 +298,91 @@ export function sanitizePartial(input: unknown, source: string): PartialConfig {
 
   return out;
 }
+
+const oneOf = (allowed: readonly string[]): string => allowed.join(', ');
+
+/** Why `sanitizePartial` drops a value, per top-level key. */
+const REJECTION_REASONS: Partial<Record<keyof PartialConfig, string>> = {
+  provider: `must be one of: ${oneOf(VALID_PROVIDERS)}`,
+  baseUrl: 'must be a full URL starting with http:// or https://',
+  model: 'must be text',
+  apiKey: 'must be text, or null to clear it',
+  temperature: 'must be a number',
+  whisperCliPath: 'must be text',
+  whisperModelPath: 'must be text',
+  sampleRate: 'must be a number',
+  hotkeyCombo: 'must be text',
+  toggleHotkeyCombo: 'must be text',
+  clipboardRestoreDelayMs: 'must be a number',
+  clipboardRetention: `must be one of: ${oneOf(VALID_CLIPBOARD_RETENTION)}`,
+  injectionMethod: `must be one of: ${oneOf(VALID_INJECTION_METHODS)}`,
+  progressiveInjection: 'must be true or false',
+  queueMaxDepth: 'must be a number, at least 1',
+  prewarm: 'must be true or false',
+  vadEnabled: 'must be true or false',
+  vadThresholdDb: 'must be a negative number (dB)',
+  vadSilenceMs: 'must be a number greater than 0',
+  vadLeadInMs: 'must be a number greater than 0',
+  contextCapture: 'must be true or false',
+  clipboardContextEntries: 'must be a number, at least 0',
+  screenshotContext: 'must be true or false',
+  appSkillRoutes:
+    'every route needs a match string plus enable and disable lists of valid skill ids',
+  systemPrompt: 'must be text',
+  enabledSkills: 'must be a list of valid skill ids (lowercase letters, numbers, hyphens)',
+  controlPanelPort: 'must be a whole number from 0 to 65535',
+  mcpPort: 'must be a whole number from 0 to 65535',
+  recorderCommand: 'must be a non-empty command line',
+  logsDir: 'must be text',
+  logMode: `must be one of: ${oneOf(VALID_LOG_MODES)}`,
+  skillsDir: 'must be text',
+};
+
+const OVERLAY_REJECTION_REASONS: Record<string, string> = {
+  anchor: `must be one of: ${oneOf(VALID_ANCHORS)}`,
+  offsetX: 'must be a number',
+  offsetY: 'must be a number',
+  visible: 'must be true or false',
+  position: 'must be null or an object with numeric x and y',
+};
+
+/**
+ * Fields that were submitted in `input` but did not survive `sanitizePartial`,
+ * each with a reason. `sanitizePartial` is built for best-effort file loading
+ * and drops bad values silently; interactive saves use this to tell the user
+ * instead. Values that are merely normalised (rounded, clamped) are not flagged.
+ */
+export function describeRejected(input: unknown, sanitized: PartialConfig): Record<string, string> {
+  const rejected: Record<string, string> = {};
+  if (!input || typeof input !== 'object' || Array.isArray(input)) return rejected;
+  const obj = input as Record<string, unknown>;
+  const kept = sanitized as Record<string, unknown>;
+
+  for (const [key, reason] of Object.entries(REJECTION_REASONS)) {
+    const value = obj[key];
+    if (value === undefined) continue;
+    const out = kept[key];
+    const lostEntries =
+      Array.isArray(value) && Array.isArray(out) ? out.length < value.length : false;
+    if (out !== undefined && !lostEntries) continue;
+    rejected[key] = key === 'baseUrl' ? `${reason}${suggestScheme(value)}` : reason;
+  }
+
+  const overlay = obj.overlay;
+  if (overlay && typeof overlay === 'object') {
+    const sent = overlay as Record<string, unknown>;
+    const out = (sanitized.overlay ?? {}) as Record<string, unknown>;
+    for (const [key, reason] of Object.entries(OVERLAY_REJECTION_REASONS)) {
+      if (sent[key] !== undefined && out[key] === undefined) rejected[`overlay.${key}`] = reason;
+    }
+  }
+  return rejected;
+}
+
+/** "localhost:1234/v1" is the common slip; offer the corrected URL. */
+function suggestScheme(value: unknown): string {
+  if (!isString(value)) return '';
+  const trimmed = value.trim();
+  if (!trimmed || /\s/.test(trimmed) || /^[a-z][a-z0-9+.-]*:\/\//i.test(trimmed)) return '';
+  return ` (did you mean http://${trimmed}?)`;
+}

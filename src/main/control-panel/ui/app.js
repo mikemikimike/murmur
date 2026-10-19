@@ -109,8 +109,36 @@ async function api(method, path, body) {
   const res = await fetch(path, opts);
   const text = await res.text();
   const json = text ? JSON.parse(text) : {};
-  if (!res.ok) throw new Error(json.error || `HTTP ${res.status}`);
+  if (!res.ok) {
+    const err = new Error(json.error || `HTTP ${res.status}`);
+    err.rejected = json.rejected;
+    throw err;
+  }
   return json;
+}
+
+function clearFieldErrors() {
+  for (const el of $$('.field-error')) el.remove();
+  for (const el of $$('.invalid')) el.classList.remove('invalid');
+}
+
+/**
+ * Marks the inputs the server refused (`rejected` is `{ field: reason }`) so a
+ * failed save never looks like a successful one.  The form stays dirty because
+ * callers only clear it after a successful save.
+ */
+function showFieldErrors(rejected) {
+  clearFieldErrors();
+  for (const [key, reason] of Object.entries(rejected ?? {})) {
+    const input = document.getElementById(`cfg-${key.replace(/^overlay\./, '')}`);
+    const wrapper = input?.closest('.field') ?? input?.parentElement;
+    if (!input || !wrapper) continue;
+    input.classList.add('invalid');
+    const note = document.createElement('span');
+    note.className = 'field-hint field-error';
+    note.textContent = `Not saved: ${reason}`;
+    wrapper.appendChild(note);
+  }
 }
 
 function toast(message, kind = '') {
@@ -646,12 +674,14 @@ function wireProvider() {
     else if (apiKey === '' && $('#cfg-apiKey').dataset.clear === '1') patch.apiKey = null;
     try {
       const snap = await api('PUT', '/api/config', patch);
+      clearFieldErrors();
       dirtyForms.delete('provider');
       applySnapshot(snap);
       // Evaluate the online warning only after the user deliberately saves.
       updateOnlineWarning(patch.baseUrl);
       toast('Provider saved', 'success');
     } catch (err) {
+      showFieldErrors(err.rejected);
       toast(err.message, 'error');
     }
   });
@@ -743,10 +773,12 @@ function wireGenericForm(selector, extract, dirtyKey) {
     e.preventDefault();
     try {
       const snap = await api('PUT', '/api/config', extract());
+      clearFieldErrors();
       if (dirtyKey) dirtyForms.delete(dirtyKey);
       applySnapshot(snap);
       toast('Saved', 'success');
     } catch (err) {
+      showFieldErrors(err.rejected);
       toast(err.message, 'error');
     }
   });
@@ -833,11 +865,13 @@ function wireSaveAll() {
       setSaveStatus('Saving…');
       await api('PUT', '/api/system-prompt', { prompt: $('#system-prompt').value });
       await api('PUT', '/api/config', readConfigForm());
+      clearFieldErrors();
       dirtyForms.clear();
       setSaveStatus('Saved', 'ok');
       toast('Everything saved', 'success');
       await refresh();
     } catch (err) {
+      showFieldErrors(err.rejected);
       setSaveStatus('Error', 'error');
       toast(err.message, 'error');
     }

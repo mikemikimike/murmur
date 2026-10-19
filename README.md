@@ -195,7 +195,7 @@ Every session gets a timestamped folder under `logs/`. By default it stores timi
 - **Drag anywhere** — pill position is saved and survives restart.
 - **Toggle hotkey** — `Ctrl+Shift+H` hides / shows the overlay from any app.
 - **Right-click menu** — open the control panel, reset position, quit.
-- **Control panel on localhost** — browser-based UI for system prompt, skills, provider, hotkeys, and paths. Changes hot-reload without restarting.
+- **Control panel on localhost** — browser-based UI for system prompt, skills, provider, hotkeys, and paths. Changes hot-reload without restarting, and a value the config rejects (for example a base URL without `http://`) is refused with a message next to the field instead of being reported as saved.
 - **Skills as Markdown** — drop `.md` files into `./skills/`, toggle them on/off from the panel. Import directly from a local file or a raw URL. Version-controllable, shareable.
 - **CLI / env override badges** — when a field's value comes from a `--flag` or env var, the control panel marks it read-only with a clear badge and tooltip explaining exactly how to unlock it. If an env var is set but a flag or `config.json` outranks it, the field stays editable and a note says why the env var has no effect.
 - **Terminal pre-launch banner** — every `pnpm dev` shows your current setup and offers a one-key menu to edit the prompt or jump to the panel.

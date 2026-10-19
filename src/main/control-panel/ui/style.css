@@ -346,6 +346,16 @@ textarea.locked:focus {
   box-shadow: none;
 }
 
+input.invalid,
+select.invalid,
+textarea.invalid {
+  border-color: var(--bad);
+}
+
+.field-hint.field-error {
+  color: var(--bad);
+}
+
 .config-banner {
   margin: 0;
   padding: 10px 24px;
