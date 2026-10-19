@@ -37,7 +37,6 @@ const FIELD_INFO = {
     flag: '--whisper-model',
     env: 'WHISPER_MODEL_PATH',
   },
-  sampleRate: { inputId: 'cfg-sampleRate', flag: '--sample-rate', env: 'WHISPER_SAMPLE_RATE' },
   hotkeyCombo: { inputId: 'cfg-hotkeyCombo', flag: '--hotkey', env: 'MURMUR_HOTKEY' },
   toggleHotkeyCombo: {
     inputId: 'cfg-toggleHotkeyCombo',
@@ -184,7 +183,6 @@ function applyStateToDom() {
   if (!dirtyForms.has('whisper')) {
     $('#cfg-whisperCliPath').value = c.whisperCliPath;
     $('#cfg-whisperModelPath').value = c.whisperModelPath;
-    $('#cfg-sampleRate').value = c.sampleRate;
   }
 
   if (!dirtyForms.has('hotkeys')) {
@@ -633,7 +631,6 @@ function readConfigForm(extra = {}) {
     temperature: Number($('#cfg-temperature').value),
     whisperCliPath: $('#cfg-whisperCliPath').value.trim(),
     whisperModelPath: $('#cfg-whisperModelPath').value.trim(),
-    sampleRate: Number($('#cfg-sampleRate').value),
     hotkeyCombo: $('#cfg-hotkeyCombo').value.trim(),
     toggleHotkeyCombo: $('#cfg-toggleHotkeyCombo').value.trim(),
     clipboardRestoreDelayMs: Number($('#cfg-clipboardRestoreDelayMs').value),
@@ -790,7 +787,6 @@ function wireWhisper() {
     () => ({
       whisperCliPath: $('#cfg-whisperCliPath').value.trim(),
       whisperModelPath: $('#cfg-whisperModelPath').value.trim(),
-      sampleRate: Number($('#cfg-sampleRate').value),
     }),
     'whisper',
   );

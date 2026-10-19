@@ -104,6 +104,20 @@ describe('control-panel server', () => {
     assert.deepEqual(body.overrides, { model: 'env' });
   });
 
+  it('does not offer a sample rate: capture is fixed at 16 kHz', async () => {
+    const cfg = makeFakeConfig({ skillsDir: tempDir });
+    handle = await startControlPanelServer({
+      getCurrentConfig: () => cfg,
+      onConfigUpdated: () => {},
+      testLlm: async () => ({ ok: true, message: 'mocked' }),
+    });
+
+    const html = await (await fetch(`${handle.url}/`)).text();
+    assert.doesNotMatch(html, /cfg-sampleRate/);
+    const body = await (await fetch(`${handle.url}/api/state`)).json();
+    assert.equal('sampleRate' in body.config, false);
+  });
+
   it('redacts apiKey in GET /api/state output', async () => {
     const cfg = makeFakeConfig({ skillsDir: tempDir, apiKey: 'super-secret-token' });
     handle = await startControlPanelServer({

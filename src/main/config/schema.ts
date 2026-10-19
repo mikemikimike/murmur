@@ -1,3 +1,4 @@
+import { TARGET_SAMPLE_RATE } from '../../shared/pcm.js';
 import type { ProviderId } from '../providers/index.js';
 
 export type RunMode = 'gui' | 'serve';
@@ -34,9 +35,6 @@ export interface ResolvedConfig {
   // Local STT
   whisperCliPath: string;
   whisperModelPath: string;
-
-  // Audio capture
-  sampleRate: number;
 
   // Push-to-talk combo (parsed by HotkeyService).
   hotkeyCombo: string;
@@ -109,7 +107,6 @@ export interface PartialConfig {
   whisperCliPath?: string;
   whisperModelPath?: string;
 
-  sampleRate?: number;
   hotkeyCombo?: string;
   toggleHotkeyCombo?: string;
   clipboardRestoreDelayMs?: number;
@@ -203,7 +200,13 @@ export function sanitizePartial(input: unknown, source: string): PartialConfig {
   if (isString(obj.whisperCliPath)) out.whisperCliPath = obj.whisperCliPath;
   if (isString(obj.whisperModelPath)) out.whisperModelPath = obj.whisperModelPath;
 
-  if (isNumber(obj.sampleRate)) out.sampleRate = obj.sampleRate;
+  // Capture is fixed at 16 kHz (what whisper.cpp expects). Older configs and the
+  // old panel field may still carry the key; honour nothing but say so.
+  if (obj.sampleRate !== undefined && obj.sampleRate !== TARGET_SAMPLE_RATE) {
+    console.warn(
+      `[config] ${source}: sampleRate is ignored; audio is always captured at ${TARGET_SAMPLE_RATE} Hz`,
+    );
+  }
   if (isString(obj.hotkeyCombo)) out.hotkeyCombo = obj.hotkeyCombo;
   if (isString(obj.toggleHotkeyCombo)) out.toggleHotkeyCombo = obj.toggleHotkeyCombo;
   if (isNumber(obj.clipboardRestoreDelayMs)) {
@@ -310,7 +313,6 @@ const REJECTION_REASONS: Partial<Record<keyof PartialConfig, string>> = {
   temperature: 'must be a number',
   whisperCliPath: 'must be text',
   whisperModelPath: 'must be text',
-  sampleRate: 'must be a number',
   hotkeyCombo: 'must be text',
   toggleHotkeyCombo: 'must be text',
   clipboardRestoreDelayMs: 'must be a number',

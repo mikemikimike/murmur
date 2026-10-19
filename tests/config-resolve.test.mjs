@@ -20,6 +20,14 @@ function withConfig(fileContents, fn) {
   }
 }
 
+describe('loadConfig — sampleRate', () => {
+  it('ignores a configured sampleRate: capture is always 16 kHz', () => {
+    withConfig({ sampleRate: 48000 }, (loaded) => {
+      assert.equal('sampleRate' in loaded.resolved, false);
+    });
+  });
+});
+
 describe('loadConfig — whisperCliPath resolution', () => {
   it('preserves a bare command name so the OS can resolve it via $PATH', () => {
     withConfig({ whisperCliPath: 'whisper-cli' }, (loaded) => {

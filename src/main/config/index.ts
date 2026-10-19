@@ -379,9 +379,6 @@ export function loadConfig(opts: LoadConfigOptions): LoadedConfig {
   const temperature =
     pickFirst(sources.cli.temperature, sources.file.temperature, sources.env.temperature) ??
     DEFAULT_CONFIG.temperature;
-  const sampleRate =
-    pickFirst(sources.cli.sampleRate, sources.file.sampleRate, sources.env.sampleRate) ??
-    DEFAULT_CONFIG.sampleRate;
   const hotkeyCombo =
     pickFirst(sources.cli.hotkeyCombo, sources.file.hotkeyCombo, sources.env.hotkeyCombo) ??
     DEFAULT_CONFIG.hotkeyCombo;
@@ -502,7 +499,6 @@ export function loadConfig(opts: LoadConfigOptions): LoadedConfig {
       'whisperModelPath',
       DEFAULT_CONFIG.whisperModelPath,
     ),
-    sampleRate,
     hotkeyCombo,
     toggleHotkeyCombo,
     clipboardRestoreDelayMs,
@@ -574,7 +570,6 @@ function computeValueSources(sources: MergeSources): ConfigValueSources {
     'temperature',
     'whisperCliPath',
     'whisperModelPath',
-    'sampleRate',
     'hotkeyCombo',
     'toggleHotkeyCombo',
     'clipboardRestoreDelayMs',
@@ -623,7 +618,6 @@ function computeOverrides(sources: MergeSources): ConfigOverrides {
     'temperature',
     'whisperCliPath',
     'whisperModelPath',
-    'sampleRate',
     'hotkeyCombo',
     'toggleHotkeyCombo',
     'clipboardRestoreDelayMs',

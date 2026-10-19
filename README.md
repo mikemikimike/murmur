@@ -450,7 +450,6 @@ Every field is optional. A fresh file contains only `whisperCliPath`, `whisperMo
   "temperature": 0.2,
   "whisperCliPath": "whisper-cli",
   "whisperModelPath": "./models/ggml-base.en.bin",
-  "sampleRate": 16000,
   "hotkeyCombo": "Ctrl+Shift+Space",
   "toggleHotkeyCombo": "Ctrl+Shift+H",
   "clipboardRestoreDelayMs": 150,
@@ -474,6 +473,8 @@ Every field is optional. A fresh file contains only `whisperCliPath`, `whisperMo
 ```
 
 Any field can be omitted; missing fields fall through to defaults. `overlay.position` is written the first time you drag the pill — at that point `overlay.anchor` flips to `"free"` so the new spot survives restarts. Right-click → **Reset position** clears it.
+
+Audio is always captured at 16 kHz mono (what whisper.cpp expects), so there is no sample-rate setting. A `sampleRate` key left in an older config is ignored (with a warning unless it is `16000`). A custom `recorderCommand` must emit 16 kHz mono S16LE.
 
 </details>
 

@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { describe, it } from 'node:test';
+import { describe, it, mock } from 'node:test';
 import { describeRejected, sanitizePartial } from '../dist/main/config/schema.js';
 
 describe('sanitizePartial', () => {
@@ -141,5 +141,30 @@ describe('describeRejected', () => {
     assert.deepEqual(reject({ bogus: 1 }), {});
     assert.deepEqual(reject(null), {});
     assert.deepEqual(reject([1, 2]), {});
+  });
+});
+
+describe('sanitizePartial — sampleRate', () => {
+  it('drops a non-16000 sampleRate and says why', () => {
+    const warn = mock.method(console, 'warn', () => {});
+    try {
+      const out = sanitizePartial({ sampleRate: 48000, model: 'm' }, 'test');
+      assert.equal('sampleRate' in out, false);
+      assert.equal(out.model, 'm');
+      assert.equal(warn.mock.callCount(), 1);
+      assert.match(String(warn.mock.calls[0].arguments[0]), /sampleRate.*16000/);
+    } finally {
+      warn.mock.restore();
+    }
+  });
+
+  it('accepts a legacy sampleRate of 16000 without warning', () => {
+    const warn = mock.method(console, 'warn', () => {});
+    try {
+      assert.deepEqual(sanitizePartial({ sampleRate: 16000 }, 'test'), {});
+      assert.equal(warn.mock.callCount(), 0);
+    } finally {
+      warn.mock.restore();
+    }
   });
 });
