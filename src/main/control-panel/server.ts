@@ -5,6 +5,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
   type ConfigOverrides,
+  type ConfigShadowedEnv,
   getConfigFileError,
   type PartialConfig,
   type ResolvedConfig,
@@ -44,6 +45,11 @@ export interface ServerDeps {
    * editing them would silently no-op on the next config reload.
    */
   getCurrentOverrides?: () => ConfigOverrides;
+  /**
+   * Env vars that are set but outranked by a CLI flag or config.json.  They
+   * lock nothing; the panel just explains why the env var has no effect.
+   */
+  getCurrentShadowedEnv?: () => ConfigShadowedEnv;
   /** Called when the config has been mutated (file already written). Expected to re-resolve. */
   onConfigUpdated: () => void;
   /** Probe the LLM provider with the current config. */
@@ -178,6 +184,7 @@ function stateSnapshot(deps: ServerDeps, csrfToken: string): Record<string, unkn
   return {
     config: publicConfig(cfg),
     overrides: deps.getCurrentOverrides?.() ?? {},
+    shadowedEnv: deps.getCurrentShadowedEnv?.() ?? {},
     configError: getConfigFileError(cfg.configFilePath),
     skills: skills.map(skillJson),
     composedSystemPrompt: composed,

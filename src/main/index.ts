@@ -24,6 +24,7 @@ import {
 import { CommandAudioRecorder } from './audio/recorder.js';
 import { printReadyBanner } from './cli/status.js';
 import {
+  describeShadowedEnv,
   getProviderConfig,
   HELP_TEXT,
   type LoadedConfig,
@@ -455,6 +456,7 @@ function reloadConfigAfterExternalUpdate(): void {
   const fresh = loadConfig({ userDataDir: app.getPath('userData') });
   loaded.resolved = fresh.resolved;
   loaded.overrides = fresh.overrides;
+  loaded.shadowedEnv = fresh.shadowedEnv;
   provider = createProvider(getProviderConfig(loaded.resolved));
   rebuildPipelineWhenIdle();
   rebindHotkeys();
@@ -477,6 +479,10 @@ async function startPanel(): Promise<void> {
       getCurrentOverrides: () => {
         if (!loaded) throw new Error('config not loaded yet');
         return loaded.overrides;
+      },
+      getCurrentShadowedEnv: () => {
+        if (!loaded) throw new Error('config not loaded yet');
+        return loaded.shadowedEnv;
       },
       onConfigUpdated: () => {
         reloadConfigAfterExternalUpdate();
@@ -557,6 +563,7 @@ async function bootstrap(): Promise<void> {
   } else if (loaded.configFileExisted) {
     console.log(`[murmur] config: ${loaded.resolved.configFilePath}`);
   }
+  for (const line of describeShadowedEnv(loaded.shadowedEnv)) console.warn(`[murmur] ${line}`);
   console.log(
     `[murmur] provider=${loaded.resolved.provider} model=${loaded.resolved.model} ` +
       `baseUrl=${loaded.resolved.baseUrl}`,

@@ -4,7 +4,13 @@ import { readFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { getUserDataDir, HELP_TEXT, loadConfig, updateConfigFile } from '../config/index.js';
+import {
+  describeShadowedEnv,
+  getUserDataDir,
+  HELP_TEXT,
+  loadConfig,
+  updateConfigFile,
+} from '../config/index.js';
 import { loadSkills } from '../skills.js';
 import { runAutoSetup } from './auto-setup.js';
 import { printBanner } from './banner.js';
@@ -53,6 +59,8 @@ async function main(): Promise<void> {
       '    Using built-in defaults. Murmur will not overwrite the file; fix it and relaunch.',
     );
   }
+
+  for (const line of describeShadowedEnv(loaded.shadowedEnv)) console.log(`\n  ! ${line}`);
 
   const skills = loadSkills(cfg.skillsDir);
   const panelUrl = controlPanelUrl(cfg.controlPanelPort);

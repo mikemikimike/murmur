@@ -88,6 +88,22 @@ describe('control-panel server', () => {
     assert.ok(Array.isArray(body.providers));
   });
 
+  it('passes shadowed env vars through GET /api/state so the panel can explain them', async () => {
+    const cfg = makeFakeConfig({ skillsDir: tempDir });
+    const shadowedEnv = { hotkeyCombo: { envVar: 'MURMUR_HOTKEY', by: 'file' } };
+    handle = await startControlPanelServer({
+      getCurrentConfig: () => cfg,
+      getCurrentOverrides: () => ({ model: 'env' }),
+      getCurrentShadowedEnv: () => shadowedEnv,
+      onConfigUpdated: () => {},
+      testLlm: async () => ({ ok: true, message: 'mocked' }),
+    });
+
+    const body = await (await fetch(`${handle.url}/api/state`)).json();
+    assert.deepEqual(body.shadowedEnv, shadowedEnv);
+    assert.deepEqual(body.overrides, { model: 'env' });
+  });
+
   it('redacts apiKey in GET /api/state output', async () => {
     const cfg = makeFakeConfig({ skillsDir: tempDir, apiKey: 'super-secret-token' });
     handle = await startControlPanelServer({

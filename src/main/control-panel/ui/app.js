@@ -8,6 +8,7 @@ const dirtyForms = new Set();
 const state = {
   config: null,
   overrides: {},
+  shadowedEnv: {},
   configError: null,
   skills: [],
   composedSystemPrompt: '',
@@ -216,6 +217,38 @@ function applyOverridesToDom() {
 }
 
 /**
+ * An env var that is set but outranked (by a CLI flag or config.json) locks
+ * nothing, since the field is still editable here.  Say why the env var does
+ * nothing so nobody wonders why their `.env` edit had no effect.
+ */
+function applyShadowedEnvToDom() {
+  const shadowed = state.shadowedEnv ?? {};
+  for (const [key, info] of Object.entries(FIELD_INFO)) {
+    const input = document.getElementById(info.inputId);
+    const wrapper = input?.closest('.field') ?? input?.parentElement;
+    if (!wrapper) continue;
+    const existing = wrapper.querySelector('.shadow-note');
+    const entry = shadowed[key];
+    if (!entry) {
+      existing?.remove();
+      continue;
+    }
+    const text =
+      entry.by === 'cli'
+        ? `${entry.envVar} is set, but the ${info.flag} CLI flag overrides it.`
+        : `${entry.envVar} is set, but config.json overrides it. Remove "${key}" from config.json to use the env var.`;
+    if (existing) {
+      existing.textContent = text;
+      continue;
+    }
+    const note = document.createElement('span');
+    note.className = 'field-hint shadow-note';
+    note.textContent = text;
+    wrapper.appendChild(note);
+  }
+}
+
+/**
  * config.json exists but can't be parsed: Murmur is running on built-in defaults
  * and refuses to save over the file, so say so instead of looking healthy.
  */
@@ -357,6 +390,7 @@ async function refresh() {
     const snap = await api('GET', '/api/state');
     state.config = snap.config;
     state.overrides = snap.overrides ?? {};
+    state.shadowedEnv = snap.shadowedEnv ?? {};
     state.configError = snap.configError ?? null;
     state.skills = snap.skills;
     state.composedSystemPrompt = snap.composedSystemPrompt;
@@ -365,6 +399,7 @@ async function refresh() {
     state.overlay = snap.overlay ?? { visible: null };
     applyStateToDom();
     applyOverridesToDom();
+    applyShadowedEnvToDom();
     applyConfigErrorToDom();
     applyOverlayStateToDom();
     setSaveStatus('');
@@ -542,6 +577,7 @@ function wireSkills() {
 function applySnapshot(snap) {
   state.config = snap.config;
   state.overrides = snap.overrides ?? state.overrides ?? {};
+  state.shadowedEnv = snap.shadowedEnv ?? state.shadowedEnv ?? {};
   state.configError = snap.configError ?? null;
   state.skills = snap.skills;
   state.composedSystemPrompt = snap.composedSystemPrompt;
@@ -549,6 +585,7 @@ function applySnapshot(snap) {
   state.csrfToken = snap.security?.csrfToken ?? state.csrfToken;
   applyStateToDom();
   applyOverridesToDom();
+  applyShadowedEnvToDom();
   applyConfigErrorToDom();
 }
 
