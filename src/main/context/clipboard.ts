@@ -11,6 +11,7 @@ const MAX_HISTORY_SIZE = 5;
 
 let lastClipboardText: string | null = null;
 let monitoringInterval: NodeJS.Timeout | null = null;
+let polling = false;
 
 // Text Murmur itself put on the clipboard (pasted prompts). Without this the
 // previous refined prompt would come back as "clipboard context" next time.
@@ -25,15 +26,25 @@ export function ignoreClipboardText(text: string): void {
 export function startClipboardMonitoring(): void {
   if (monitoringInterval) return;
 
-  try {
-    lastClipboardText = clipboard.readText();
-  } catch {
-    lastClipboardText = null;
-  }
+  // clipboard.readText() is async since Electron 44; `polling` keeps a slow read
+  // from overlapping the next tick and from racing the initial seed read.
+  polling = true;
+  lastClipboardText = null;
+  clipboard
+    .readText()
+    .then((text) => {
+      lastClipboardText = text;
+    })
+    .catch(() => {})
+    .finally(() => {
+      polling = false;
+    });
 
-  monitoringInterval = setInterval(() => {
+  monitoringInterval = setInterval(async () => {
+    if (polling) return;
+    polling = true;
     try {
-      const currentText = clipboard.readText();
+      const currentText = await clipboard.readText();
       if (currentText && currentText !== lastClipboardText) {
         lastClipboardText = currentText;
         if (ownWrites.includes(currentText)) return;
@@ -45,7 +56,10 @@ export function startClipboardMonitoring(): void {
           clipboardHistory.pop();
         }
       }
-    } catch {}
+    } catch {
+    } finally {
+      polling = false;
+    }
   }, 500);
 }
 
