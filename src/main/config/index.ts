@@ -15,7 +15,7 @@ import {
 
 export { HELP_TEXT } from './cli.js';
 export { DEFAULT_CONFIG, DEFAULT_SYSTEM_PROMPT } from './defaults.js';
-export { updateConfigFile } from './file.js';
+export { getConfigFileError, updateConfigFile } from './file.js';
 export type {
   AppSkillRoute,
   ClipboardRetention,
@@ -233,6 +233,13 @@ function resolveLayeredPath(
  * persist edits to it.
  */
 export type ConfigOverrides = Partial<Record<keyof ResolvedConfig, 'cli' | 'env'>>;
+/**
+ * Env vars that are set but lose to a higher-precedence source, so changing them
+ * has no effect. `by` is the source that wins; `envVar` is the variable's name.
+ */
+export type ConfigShadowedEnv = Partial<
+  Record<keyof ResolvedConfig, { envVar: string; by: 'cli' | 'file' }>
+>;
 export type ConfigValueSource = 'cli' | 'file' | 'env' | 'default';
 export type ConfigValueSources = Partial<Record<keyof ResolvedConfig, ConfigValueSource>>;
 
@@ -241,7 +248,10 @@ export interface LoadedConfig {
   cli: CliResult;
   configFileExisted: boolean;
   configFileWritten: boolean;
+  /** Set when config.json exists but could not be read or parsed; defaults are in use and the file is left untouched. */
+  configFileError: string | null;
   overrides: ConfigOverrides;
+  shadowedEnv: ConfigShadowedEnv;
   valueSources: ConfigValueSources;
 }
 
@@ -282,8 +292,11 @@ export function loadConfig(opts: LoadConfigOptions): LoadedConfig {
     const IS_WINDOWS = process.platform === 'win32';
     const devWhisperCli = path.resolve(process.cwd(), DEFAULT_CONFIG.whisperCliPath);
     const whisperBase = IS_WINDOWS && existsSync(devWhisperCli) ? process.cwd() : userDataDir;
+    // Seed only what has to be absolute. A seeded default outranks the same key's
+    // env var forever (CLI > file > env), so every other key is left out and
+    // falls through to env, then to the built-in default. A path whose env var
+    // is set right now is skipped for the same reason.
     const seedDefaults: Record<string, unknown> = {
-      ...DEFAULT_CONFIG,
       whisperCliPath: IS_WINDOWS
         ? path.resolve(whisperBase, DEFAULT_CONFIG.whisperCliPath)
         : DEFAULT_CONFIG.whisperCliPath, // bare name, resolved via PATH at runtime
@@ -293,14 +306,7 @@ export function loadConfig(opts: LoadConfigOptions): LoadedConfig {
       logsDir: path.resolve(userDataDir, 'logs'),
       skillsDir: path.resolve(userDataDir, 'skills'),
     };
-    // Do not persist built-in LLM defaults into a fresh config. Leaving these
-    // fields absent lets env vars keep working and lets first-run setup know the
-    // user has not explicitly chosen provider settings yet.
-    delete seedDefaults.provider;
-    delete seedDefaults.baseUrl;
-    delete seedDefaults.model;
-    delete seedDefaults.apiKey;
-    delete seedDefaults.progressiveInjection;
+    for (const key of Object.keys(env)) delete seedDefaults[key];
     written = writeDefaultConfigIfMissing(configFilePath, seedDefaults);
     if (written) fileLoad = readConfigFile(configFilePath);
   } else if (process.platform !== 'win32' && fileLoad.partial.whisperCliPath) {
@@ -373,9 +379,6 @@ export function loadConfig(opts: LoadConfigOptions): LoadedConfig {
   const temperature =
     pickFirst(sources.cli.temperature, sources.file.temperature, sources.env.temperature) ??
     DEFAULT_CONFIG.temperature;
-  const sampleRate =
-    pickFirst(sources.cli.sampleRate, sources.file.sampleRate, sources.env.sampleRate) ??
-    DEFAULT_CONFIG.sampleRate;
   const hotkeyCombo =
     pickFirst(sources.cli.hotkeyCombo, sources.file.hotkeyCombo, sources.env.hotkeyCombo) ??
     DEFAULT_CONFIG.hotkeyCombo;
@@ -496,7 +499,6 @@ export function loadConfig(opts: LoadConfigOptions): LoadedConfig {
       'whisperModelPath',
       DEFAULT_CONFIG.whisperModelPath,
     ),
-    sampleRate,
     hotkeyCombo,
     toggleHotkeyCombo,
     clipboardRestoreDelayMs,
@@ -541,7 +543,9 @@ export function loadConfig(opts: LoadConfigOptions): LoadedConfig {
     cli,
     configFileExisted: fileLoad.existed,
     configFileWritten: written,
+    configFileError: fileLoad.error ?? null,
     overrides: computeOverrides(sources),
+    shadowedEnv: computeShadowedEnv(sources),
     valueSources: computeValueSources(sources),
   };
 }
@@ -566,7 +570,6 @@ function computeValueSources(sources: MergeSources): ConfigValueSources {
     'temperature',
     'whisperCliPath',
     'whisperModelPath',
-    'sampleRate',
     'hotkeyCombo',
     'toggleHotkeyCombo',
     'clipboardRestoreDelayMs',
@@ -600,9 +603,10 @@ function computeValueSources(sources: MergeSources): ConfigValueSources {
 
 /**
  * For each resolved field, record whether its current value is being pinned by
- * a CLI flag or environment variable.  Anything not in the returned map is
- * coming from the JSON config file (or built-in defaults) and is therefore
- * editable via the control panel.
+ * a CLI flag or environment variable.  Only the *winning* source counts: an env
+ * var that the config file outranks is not a lock (see `computeShadowedEnv`).
+ * Anything not in the returned map is coming from the JSON config file (or
+ * built-in defaults) and is therefore editable via the control panel.
  */
 function computeOverrides(sources: MergeSources): ConfigOverrides {
   const out: ConfigOverrides = {};
@@ -614,7 +618,6 @@ function computeOverrides(sources: MergeSources): ConfigOverrides {
     'temperature',
     'whisperCliPath',
     'whisperModelPath',
-    'sampleRate',
     'hotkeyCombo',
     'toggleHotkeyCombo',
     'clipboardRestoreDelayMs',
@@ -640,13 +643,65 @@ function computeOverrides(sources: MergeSources): ConfigOverrides {
     'logsDir',
     'skillsDir',
   ];
-  const cli = sources.cli as Record<string, unknown>;
-  const env = sources.env as Record<string, unknown>;
   for (const key of fields) {
-    if (cli[key] !== undefined && cli[key] !== null) out[key] = 'cli';
-    else if (env[key] !== undefined && env[key] !== null) out[key] = 'env';
+    const source = sourceOf(sources, key as keyof PartialConfig);
+    if (source === 'cli' || source === 'env') out[key] = source;
   }
   return out;
+}
+
+/** Env var(s) that feed each config field; the first one set is reported. */
+const ENV_VARS: Partial<Record<keyof PartialConfig, readonly string[]>> = {
+  provider: ['LLM_PROVIDER'],
+  baseUrl: ['LLM_BASE_URL', 'OLLAMA_URL'],
+  model: ['LLM_MODEL'],
+  apiKey: ['LLM_API_KEY'],
+  temperature: ['LLM_TEMPERATURE'],
+  whisperCliPath: ['WHISPER_CLI_PATH'],
+  whisperModelPath: ['WHISPER_MODEL_PATH'],
+  hotkeyCombo: ['MURMUR_HOTKEY'],
+  toggleHotkeyCombo: ['MURMUR_TOGGLE_HOTKEY'],
+  clipboardRestoreDelayMs: ['MURMUR_CLIPBOARD_RESTORE_DELAY_MS'],
+  clipboardRetention: ['MURMUR_CLIPBOARD_RETENTION'],
+  injectionMethod: ['MURMUR_INJECTION_METHOD'],
+  progressiveInjection: ['MURMUR_PROGRESSIVE_INJECTION'],
+  vadEnabled: ['MURMUR_VAD_ENABLED'],
+  vadThresholdDb: ['MURMUR_VAD_THRESHOLD_DB'],
+  vadSilenceMs: ['MURMUR_VAD_SILENCE_MS'],
+  vadLeadInMs: ['MURMUR_VAD_LEAD_IN_MS'],
+  contextCapture: ['MURMUR_CONTEXT_CAPTURE'],
+  clipboardContextEntries: ['MURMUR_CLIPBOARD_CONTEXT_ENTRIES'],
+  screenshotContext: ['MURMUR_SCREENSHOT_CONTEXT'],
+  logsDir: ['MURMUR_LOGS_DIR'],
+  logMode: ['MURMUR_LOG_MODE'],
+  skillsDir: ['MURMUR_SKILLS_DIR'],
+  systemPrompt: ['MURMUR_SYSTEM_PROMPT'],
+  enabledSkills: ['MURMUR_ENABLED_SKILLS'],
+  controlPanelPort: ['MURMUR_CONTROL_PANEL_PORT'],
+  mcpPort: ['MURMUR_MCP_PORT'],
+  recorderCommand: ['MURMUR_RECORDER_COMMAND'],
+};
+
+function computeShadowedEnv(sources: MergeSources): ConfigShadowedEnv {
+  const out: ConfigShadowedEnv = {};
+  const env = sources.env as Record<string, unknown>;
+  for (const [key, names] of Object.entries(ENV_VARS)) {
+    if (env[key] === undefined || env[key] === null) continue;
+    const by = sourceOf(sources, key as keyof PartialConfig);
+    if (by !== 'cli' && by !== 'file') continue;
+    const envVar = names.find((n) => process.env[n]) ?? names[0];
+    out[key as keyof ResolvedConfig] = { envVar, by };
+  }
+  return out;
+}
+
+/** Human-readable lines for `computeShadowedEnv`, for startup logs. */
+export function describeShadowedEnv(shadowed: ConfigShadowedEnv): string[] {
+  return Object.entries(shadowed).map(([field, info]) =>
+    info.by === 'cli'
+      ? `${info.envVar} is set but a CLI flag overrides ${field}`
+      : `${info.envVar} is set but config.json overrides it: edit or remove "${field}" in config.json to use the env var`,
+  );
 }
 
 export function getProviderConfig(cfg: ResolvedConfig): ProviderConfig {
@@ -666,4 +721,5 @@ export function printResolvedConfig(loaded: LoadedConfig): void {
   console.log(`\nconfig file: ${loaded.resolved.configFilePath}`);
   console.log(`  existed: ${loaded.configFileExisted}`);
   console.log(`  written: ${loaded.configFileWritten}`);
+  if (loaded.configFileError) console.log(`  error: ${loaded.configFileError}`);
 }

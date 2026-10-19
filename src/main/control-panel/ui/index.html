@@ -65,6 +65,8 @@
       </div>
     </header>
 
+    <div id="config-error" class="config-banner" role="alert" hidden></div>
+
     <nav class="tabs" role="tablist">
       <button type="button" class="tab" data-tab="system-prompt">System prompt</button>
       <button type="button" class="tab" data-tab="skills">Skills</button>
@@ -291,10 +293,6 @@
           <label>
             <span>Whisper model path</span>
             <input id="cfg-whisperModelPath" type="text" autocomplete="off" />
-          </label>
-          <label>
-            <span>Sample rate (Hz)</span>
-            <input id="cfg-sampleRate" type="number" min="8000" max="48000" />
           </label>
           <div class="pane-footer">
             <div class="spacer"></div>

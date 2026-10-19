@@ -44,7 +44,6 @@ export const DEFAULT_CONFIG: Required<Omit<PartialConfig, 'apiKey' | 'overlay'>>
     ? './bin/whisper/models/ggml-base.en.bin'
     : './models/ggml-base.en.bin',
 
-  sampleRate: 16000,
   hotkeyCombo: 'Ctrl+Shift+Space',
   toggleHotkeyCombo: 'Ctrl+Shift+H',
   clipboardRestoreDelayMs: 150,

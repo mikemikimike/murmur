@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { request as httpRequest } from 'node:http';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -86,6 +86,36 @@ describe('control-panel server', () => {
     assert.equal(body.config.provider, 'ollama');
     assert.ok(Array.isArray(body.skills));
     assert.ok(Array.isArray(body.providers));
+  });
+
+  it('passes shadowed env vars through GET /api/state so the panel can explain them', async () => {
+    const cfg = makeFakeConfig({ skillsDir: tempDir });
+    const shadowedEnv = { hotkeyCombo: { envVar: 'MURMUR_HOTKEY', by: 'file' } };
+    handle = await startControlPanelServer({
+      getCurrentConfig: () => cfg,
+      getCurrentOverrides: () => ({ model: 'env' }),
+      getCurrentShadowedEnv: () => shadowedEnv,
+      onConfigUpdated: () => {},
+      testLlm: async () => ({ ok: true, message: 'mocked' }),
+    });
+
+    const body = await (await fetch(`${handle.url}/api/state`)).json();
+    assert.deepEqual(body.shadowedEnv, shadowedEnv);
+    assert.deepEqual(body.overrides, { model: 'env' });
+  });
+
+  it('does not offer a sample rate: capture is fixed at 16 kHz', async () => {
+    const cfg = makeFakeConfig({ skillsDir: tempDir });
+    handle = await startControlPanelServer({
+      getCurrentConfig: () => cfg,
+      onConfigUpdated: () => {},
+      testLlm: async () => ({ ok: true, message: 'mocked' }),
+    });
+
+    const html = await (await fetch(`${handle.url}/`)).text();
+    assert.doesNotMatch(html, /cfg-sampleRate/);
+    const body = await (await fetch(`${handle.url}/api/state`)).json();
+    assert.equal('sampleRate' in body.config, false);
   });
 
   it('redacts apiKey in GET /api/state output', async () => {
@@ -239,5 +269,133 @@ describe('control-panel server', () => {
       headers,
     });
     assert.equal(del.status, 400);
+  });
+
+  describe('PUT /api/config with rejected values', () => {
+    async function put(body) {
+      const configFilePath = path.join(tempDir, 'config.json');
+      const original = `${JSON.stringify({ model: 'keep-me', baseUrl: 'http://localhost:11434' }, null, 2)}\n`;
+      writeFileSync(configFilePath, original, 'utf8');
+      let updated = 0;
+      const cfg = makeFakeConfig({ skillsDir: tempDir, configFilePath });
+      handle = await startControlPanelServer({
+        getCurrentConfig: () => cfg,
+        onConfigUpdated: () => {
+          updated++;
+        },
+        testLlm: async () => ({ ok: true, message: 'mocked' }),
+      });
+      const state = await (await fetch(`${handle.url}/api/state`)).json();
+      const res = await fetch(`${handle.url}/api/config`, {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Murmur-Token': state.security.csrfToken,
+        },
+        body: JSON.stringify(body),
+      });
+      return {
+        res,
+        json: await res.json(),
+        updated,
+        original,
+        onDisk: () => readFileSync(configFilePath, 'utf8'),
+      };
+    }
+
+    it('answers 400 naming a scheme-less baseUrl instead of reporting success', async () => {
+      const r = await put({ baseUrl: 'localhost:1234/v1' });
+      assert.equal(r.res.status, 400);
+      assert.match(r.json.error, /baseUrl/);
+      assert.deepEqual(Object.keys(r.json.rejected), ['baseUrl']);
+      assert.match(r.json.rejected.baseUrl, /http:\/\/localhost:1234\/v1/);
+    });
+
+    it('writes none of the fields when any field is rejected', async () => {
+      const r = await put({ baseUrl: 'localhost:1234/v1', model: 'would-be-saved' });
+      assert.equal(r.res.status, 400);
+      assert.equal(r.onDisk(), r.original);
+      assert.equal(r.updated, 0, 'does not trigger a config reload');
+    });
+
+    it('rejects out-of-range numbers and malformed appSkillRoutes', async () => {
+      const r = await put({ mcpPort: 70000, appSkillRoutes: [{ match: 5 }] });
+      assert.equal(r.res.status, 400);
+      assert.deepEqual(Object.keys(r.json.rejected).sort(), ['appSkillRoutes', 'mcpPort']);
+    });
+
+    it('still saves a fully valid patch with 200', async () => {
+      const r = await put({ baseUrl: 'http://localhost:1234/v1', model: 'new-model' });
+      assert.equal(r.res.status, 200);
+      assert.deepEqual(JSON.parse(r.onDisk()), {
+        model: 'new-model',
+        baseUrl: 'http://localhost:1234/v1',
+      });
+      assert.equal(r.updated, 1);
+    });
+  });
+
+  describe('with an unparseable config.json', () => {
+    const MALFORMED = '{\n "provider": "anthropic",\n "systemPrompt": "TUNED",\n}\n';
+
+    async function startWithMalformedConfig() {
+      const configFilePath = path.join(tempDir, 'config.json');
+      writeFileSync(configFilePath, MALFORMED, 'utf8');
+      const cfg = makeFakeConfig({ skillsDir: tempDir, configFilePath });
+      handle = await startControlPanelServer({
+        getCurrentConfig: () => cfg,
+        onConfigUpdated: () => {},
+        testLlm: async () => ({ ok: true, message: 'mocked' }),
+      });
+      const state = await (await fetch(`${handle.url}/api/state`)).json();
+      return { configFilePath, state };
+    }
+
+    it('reports the parse error in GET /api/state so the panel can show a banner', async () => {
+      const { state } = await startWithMalformedConfig();
+      assert.match(state.configError, /line 4\b/);
+    });
+
+    it('reports no configError for a valid config', async () => {
+      const configFilePath = path.join(tempDir, 'config.json');
+      writeFileSync(configFilePath, '{"model":"x"}', 'utf8');
+      const cfg = makeFakeConfig({ skillsDir: tempDir, configFilePath });
+      handle = await startControlPanelServer({
+        getCurrentConfig: () => cfg,
+        onConfigUpdated: () => {},
+        testLlm: async () => ({ ok: true, message: 'mocked' }),
+      });
+      const state = await (await fetch(`${handle.url}/api/state`)).json();
+      assert.equal(state.configError, null);
+    });
+
+    it('refuses PUT /api/config instead of overwriting the file', async () => {
+      const { configFilePath, state } = await startWithMalformedConfig();
+      const res = await fetch(`${handle.url}/api/config`, {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Murmur-Token': state.security.csrfToken,
+        },
+        body: JSON.stringify({ model: 'new-model' }),
+      });
+      assert.equal(res.status, 409);
+      assert.match((await res.json()).error, /line 4\b/);
+      assert.equal(readFileSync(configFilePath, 'utf8'), MALFORMED);
+    });
+
+    it('refuses PUT /api/system-prompt instead of overwriting the file', async () => {
+      const { configFilePath, state } = await startWithMalformedConfig();
+      const res = await fetch(`${handle.url}/api/system-prompt`, {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Murmur-Token': state.security.csrfToken,
+        },
+        body: JSON.stringify({ prompt: 'new prompt' }),
+      });
+      assert.equal(res.status, 409);
+      assert.equal(readFileSync(configFilePath, 'utf8'), MALFORMED);
+    });
   });
 });

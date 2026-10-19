@@ -1,6 +1,6 @@
 import { CommandAudioRecorder } from './audio/recorder.js';
 import type { LoadedConfig, ResolvedConfig } from './config/index.js';
-import { getProviderConfig, loadConfig } from './config/index.js';
+import { describeShadowedEnv, getProviderConfig, loadConfig } from './config/index.js';
 import { type ServerHandle, startControlPanelServer } from './control-panel/server.js';
 import { startMcpServer as defaultStartMcpServer, type McpServerHandle } from './mcp/server.js';
 import { Pipeline } from './pipeline.js';
@@ -52,6 +52,7 @@ function createHeadlessPipeline(
 
 export async function createRuntime(opts: CreateRuntimeOptions): Promise<Runtime> {
   const loaded = loadConfig({ userDataDir: opts.userDataDir, argv: opts.argv });
+  for (const line of describeShadowedEnv(loaded.shadowedEnv)) console.warn(`[murmur] ${line}`);
   const createProvider = opts.createProvider ?? defaultCreateProvider;
   let provider = createProvider(getProviderConfig(loaded.resolved));
   const preflight = await (opts.runPreflight ?? defaultRunPreflight)(loaded.resolved, provider, {
@@ -72,6 +73,7 @@ export async function createRuntime(opts: CreateRuntimeOptions): Promise<Runtime
     const fresh = loadConfig({ userDataDir: opts.userDataDir, argv: opts.argv });
     loaded.resolved = fresh.resolved;
     loaded.overrides = fresh.overrides;
+    loaded.shadowedEnv = fresh.shadowedEnv;
     provider = createProvider(getProviderConfig(loaded.resolved));
 
     if (pipeline.isBusy()) {
@@ -100,6 +102,7 @@ export async function createRuntime(opts: CreateRuntimeOptions): Promise<Runtime
   const panelDeps = {
     getCurrentConfig: () => loaded.resolved,
     getCurrentOverrides: () => loaded.overrides,
+    getCurrentShadowedEnv: () => loaded.shadowedEnv,
     onConfigUpdated: reloadConfig,
     testLlm: async () => {
       const start = Date.now();
