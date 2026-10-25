@@ -122,7 +122,13 @@ describe('streaming providers', () => {
     assert.equal(streamedTruncated.text, 'partial');
     assert.equal(streamedTruncated.stopReason, 'length');
 
-    serve([chunk('partial', 'stop')]);
+    // No [DONE] but an explicit finish_reason: the server finished, just tersely.
+    serve([chunk('complete', 'stop')]);
+    const noDone = await p.refineStream(REQ, { onToken: () => {} });
+    assert.equal(noDone.stopReason, 'end');
+
+    // Neither [DONE] nor a finish_reason: the connection dropped mid-stream.
+    serve([chunk('partial')]);
     const aborted = await p.refineStream(REQ, { onToken: () => {} });
     assert.equal(aborted.stopReason, 'aborted');
   });

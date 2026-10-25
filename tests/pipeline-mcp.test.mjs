@@ -169,6 +169,61 @@ describe('Pipeline MCP / headless', () => {
     }
   });
 
+  it('keeps typing progressively and still rejects a truncated stream', async () => {
+    const cfg = makeFakeConfig({ _baseDir: tempBase, progressiveInjection: true });
+    loadSkills(cfg.skillsDir);
+    const provider = makeFakeProvider([]);
+    provider.refineStream = async (_req, { onToken }) => {
+      onToken('partial ');
+      onToken('output');
+      return { text: 'partial output', durationMs: 1, stopReason: 'length' };
+    };
+    const typed = [];
+    const clipboard = [];
+    const pipeline = new Pipeline({
+      cfg,
+      provider,
+      transcribeAudio: async () => ({ text: 'spoken request', stderr: '', durationMs: 1 }),
+      createProgressiveInjector: () => ({
+        pushToken: (token) => typed.push(token),
+        flush: async () => {},
+        abort: () => {},
+      }),
+      copyToClipboard: async (text) => clipboard.push(text),
+    });
+
+    await assert.rejects(pipeline.processPcm(samplePcm()), { name: 'IncompleteRefinementError' });
+    assert.deepEqual(typed, ['partial ', 'output']);
+    assert.deepEqual(clipboard, ['partial output']);
+  });
+
+  it('leaves the clipboard alone for a truncated headless record or refine', async () => {
+    const cfg = makeFakeConfig({ _baseDir: tempBase });
+    loadSkills(cfg.skillsDir);
+    const provider = makeFakeProvider([]);
+    const truncated = { text: 'partial output', durationMs: 1, stopReason: 'length' };
+    provider.refine = async () => truncated;
+    provider.refineStream = async () => truncated;
+    const clipboard = [];
+    const pipeline = new Pipeline({
+      cfg,
+      provider,
+      transcribeAudio: async () => ({ text: 'spoken request', stderr: '', durationMs: 1 }),
+      copyToClipboard: async (text) => clipboard.push(text),
+    });
+
+    await assert.rejects(pipeline.processPcm(samplePcm(), { inject: false }), (err) => {
+      assert.equal(err.name, 'IncompleteRefinementError');
+      assert.equal(err.partialText, 'partial output');
+      assert.equal(err.copiedToClipboard, false);
+      return true;
+    });
+    await assert.rejects(pipeline.refineText('raw request'), {
+      name: 'IncompleteRefinementError',
+    });
+    assert.deepEqual(clipboard, []);
+  });
+
   it('refineText with skillIds composes skills without mutating cfg.enabledSkills', async () => {
     const cfg = makeFakeConfig({ _baseDir: tempBase, enabledSkills: [] });
     loadSkills(cfg.skillsDir);

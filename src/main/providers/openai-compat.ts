@@ -157,7 +157,9 @@ export class OpenAiCompatProvider implements LlmProvider {
         visible.push(content);
       }
     });
-    if (!sawDone) finishReason = 'aborted';
+    // An explicit finish_reason is authoritative; some servers close the stream
+    // without a trailing [DONE]. Only a stream with neither was cut off.
+    if (!sawDone && finishReason === 'unknown') finishReason = 'aborted';
     visible.flush();
 
     return {

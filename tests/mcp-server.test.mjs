@@ -107,7 +107,6 @@ describe('Murmur MCP tool handlers', () => {
     });
 
     assert.equal(result.structuredContent.text, 'raw:concise-output');
-    assert.equal(result.structuredContent.stopReason, 'end');
   });
 
   it('surfaces a partial refine result with its stop reason and transcription', async () => {

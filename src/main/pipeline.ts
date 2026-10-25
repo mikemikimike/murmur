@@ -159,7 +159,7 @@ export class Pipeline {
   private async rejectIncompleteRefinement(
     response: { text: string; stopReason?: StopReason },
     transcription: string,
-    sessionDir?: string,
+    opts: { sessionDir?: string; copyToClipboard: boolean },
   ): Promise<never> {
     const stopReason = response.stopReason;
     if (stopReason !== 'length' && stopReason !== 'aborted') {
@@ -167,7 +167,7 @@ export class Pipeline {
     }
 
     let copiedToClipboard = false;
-    if (response.text && this.deps.copyToClipboard) {
+    if (opts.copyToClipboard && response.text && this.deps.copyToClipboard) {
       try {
         await this.deps.copyToClipboard(response.text);
         copiedToClipboard = true;
@@ -179,7 +179,7 @@ export class Pipeline {
       response.text,
       transcription,
       stopReason,
-      sessionDir,
+      opts.sessionDir,
       copiedToClipboard,
     );
   }
@@ -498,7 +498,9 @@ export class Pipeline {
     });
     const refined = response.text;
     if (response.stopReason === 'length' || response.stopReason === 'aborted') {
-      await this.rejectIncompleteRefinement(response, text);
+      // Callers get the partial text in the error; an MCP call must not
+      // overwrite the user's clipboard as a side effect.
+      await this.rejectIncompleteRefinement(response, text, { copyToClipboard: false });
     }
     if (!refined) {
       throw new Error(`${provider.config.displayName} returned empty refinement`);
@@ -574,6 +576,9 @@ export class Pipeline {
         {
           onToken: (token) => {
             this.emitToken(token, 'refinement');
+            // Progressive injection is opt-in: typing as tokens arrive is its
+            // whole point. A truncated stream is still rejected below.
+            if (injector) injector.pushToken(token);
           },
         },
       );
@@ -584,16 +589,15 @@ export class Pipeline {
       session.writeRefined(refined);
 
       if (stopReason === 'length' || stopReason === 'aborted') {
-        await this.rejectIncompleteRefinement(response, transcription, session.dir);
+        await this.rejectIncompleteRefinement(response, transcription, {
+          sessionDir: session.dir,
+          copyToClipboard: true,
+        });
       }
 
       if (!refined) throw new Error(`${provider.config.displayName} returned empty refinement`);
 
       if (injector) {
-        // Do not type streamed tokens until the provider confirms a complete
-        // response; a length-limited stream must never partially alter the
-        // user's editor.
-        injector.pushToken(refined);
         const iStart = Date.now();
         await injector.flush();
         timings.injectMs = Date.now() - iStart;
@@ -719,6 +723,9 @@ export class Pipeline {
         {
           onToken: (token) => {
             this.emitToken(token, 'refinement');
+            // Progressive injection is opt-in: typing as tokens arrive is its
+            // whole point. A truncated stream is still rejected below.
+            if (injector) injector.pushToken(token);
           },
         },
       );
@@ -732,15 +739,15 @@ export class Pipeline {
       );
 
       if (stopReason === 'length' || stopReason === 'aborted') {
-        await this.rejectIncompleteRefinement(response, transcription, session.dir);
+        await this.rejectIncompleteRefinement(response, transcription, {
+          sessionDir: session.dir,
+          copyToClipboard: shouldInject,
+        });
       }
 
       if (!refined) throw new Error(`${provider.config.displayName} returned empty refinement`);
 
       if (injector) {
-        // Delay progressive injection until the stop reason is known so an
-        // aborted or length-limited stream cannot type partial text.
-        injector.pushToken(refined);
         const iStart = Date.now();
         await injector.flush();
         timings.injectMs = Date.now() - iStart;

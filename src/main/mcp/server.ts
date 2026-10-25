@@ -11,7 +11,6 @@ import type { ResolvedConfig } from '../config/index.js';
 import { hasLoopbackHost, hasLoopbackOriginOrNone } from '../http-guard.js';
 import type { Pipeline, ProcessPcmResult } from '../pipeline.js';
 import { IncompleteRefinementError } from '../pipeline.js';
-import type { StopReason } from '../providers/types.js';
 import { isValidSkillId, loadSkills } from '../skills.js';
 
 const PIPELINE_BUSY_MESSAGE = 'pipeline is busy (recording or processing)';
@@ -101,10 +100,6 @@ function refinedText(result: string | { text: string }): string {
   return typeof result === 'string' ? result : result.text;
 }
 
-function refinedStopReason(result: string | { stopReason?: StopReason }): StopReason {
-  return typeof result === 'string' ? 'end' : (result.stopReason ?? 'end');
-}
-
 function recordText(result: ProcessPcmResult): string {
   return result.text;
 }
@@ -170,17 +165,9 @@ function registerMurmurTools(
         skillIds: args.skill_ids,
         inject: args.inject ?? false,
       });
-      if (result.stopReason === 'length' || result.stopReason === 'aborted') {
-        return toolError(
-          new IncompleteRefinementError(
-            result.text,
-            result.transcription,
-            result.stopReason,
-            result.sessionDir,
-            false,
-          ),
-        );
-      }
+      // A length-limited or aborted refinement never gets here: the pipeline
+      // throws IncompleteRefinementError, which toolError() turns into a
+      // structured partial result.
       return textResult({
         text: recordText(result),
         transcription: result.transcription,
@@ -255,23 +242,8 @@ function registerMurmurTools(
     pipeline.addTokenListener(listener);
     try {
       rejectIfBusy(deps.getPipeline);
-      const result = (await pipeline.refineText(args.text, {
-        skillIds: args.skill_ids,
-      })) as string | { text: string; stopReason?: StopReason };
-      if (result !== null && typeof result !== 'string') {
-        if (result.stopReason === 'length' || result.stopReason === 'aborted') {
-          return toolError(
-            new IncompleteRefinementError(
-              result.text,
-              args.text,
-              result.stopReason,
-              undefined,
-              false,
-            ),
-          );
-        }
-      }
-      return textResult({ text: refinedText(result), stopReason: refinedStopReason(result) });
+      const result = await pipeline.refineText(args.text, { skillIds: args.skill_ids });
+      return textResult({ text: refinedText(result) });
     } catch (err) {
       return toolError(err);
     } finally {
